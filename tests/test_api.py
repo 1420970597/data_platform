@@ -107,7 +107,7 @@ def test_export_materializes_linked_samples_as_jsonl():
     body = exported.json()
     assert body['sample_count'] == 1
     assert body['manifest_uri'].endswith('.manifest.json')
-    content = Path(body['artifact_uri']).read_text(encoding='utf-8').strip()
+    content = Path(body['data_artifact_uri']).read_text(encoding='utf-8').strip()
     assert '联合保障证据' not in content
     assert 'evidence_refs' in content
 

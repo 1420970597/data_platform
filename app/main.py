@@ -160,8 +160,8 @@ def approve_dataset(dataset_id: int, request: Request, db: Session = Depends(get
 
 @app.post("/api/v1/datasets/{dataset_id}/exports")
 def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db: Session = Depends(get_db)):
-    """为已批准数据集生成不可变 manifest 工件，不暴露原始资产。"""
-    actor(request, {"training_engineer", "data_steward"})
+    """为已批准数据集生成可训练 JSONL 和不可变 manifest。"""
+    subject = actor(request, {"training_engineer", "data_steward"})
     dataset = db.get(DatasetVersion, dataset_id)
     if not dataset:
         raise HTTPException(404, "数据集不存在")
@@ -171,20 +171,45 @@ def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db
         raise HTTPException(403, "用途声明与数据集用途不匹配")
     export_dir = Path(settings.data_dir) / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
+    if payload.format == "parquet":
+        raise HTTPException(422, "当前运行时未安装 parquet 编码器，请使用 jsonl")
+    import json
+    links = db.scalars(select(DatasetSample).where(DatasetSample.dataset_id == dataset_id).order_by(DatasetSample.id)).all()
+    samples = []
+    for link in links:
+        sample = db.get(TrainingSample, link.sample_id)
+        if not sample:
+            continue
+        # 导出样本只包含结构化字段和证据 ID，不暴露原始资产正文。
+        samples.append({
+            "sample_id": sample.id,
+            "split": link.split,
+            "task_type": sample.task_type,
+            "input_refs": sample.input_refs,
+            "evidence_refs": sample.evidence_refs,
+            "target": sample.target,
+            "scenario_context": sample.scenario_context,
+        })
+    serialized = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in samples)
+    data_artifact = export_dir / f"dataset-{dataset_id}-{payload.export_type.lower()}.jsonl"
+    data_artifact.write_text(serialized, encoding="utf-8")
+    materialized_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     manifest = {
         "dataset_id": dataset.id, "name": dataset.name, "purpose": dataset.purpose,
         "export_type": payload.export_type, "format": payload.format,
         "manifest_hash": dataset.manifest_hash, "taxonomy_version": dataset.taxonomy_version,
-        "sample_count": dataset.sample_count, "coverage_report": dataset.coverage_report,
+        "sample_count": len(samples), "declared_sample_count": dataset.sample_count,
+        "materialized_sha256": materialized_hash, "coverage_report": dataset.coverage_report,
+        "splits": {split: sum(1 for row in samples if row["split"] == split) for split in {row["split"] for row in samples}},
     }
-    artifact = export_dir / f"dataset-{dataset_id}-{payload.export_type.lower()}.manifest.json"
-    artifact.write_text(__import__("json").dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    export = PackageExport(dataset_id=dataset_id, export_type=payload.export_type, format=payload.format, artifact_uri=str(artifact), artifact_sha256=artifact_hash)
+    manifest_artifact = export_dir / f"dataset-{dataset_id}-{payload.export_type.lower()}.manifest.json"
+    manifest_artifact.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    artifact_hash = hashlib.sha256(data_artifact.read_bytes()).hexdigest()
+    export = PackageExport(dataset_id=dataset_id, export_type=payload.export_type, format=payload.format, artifact_uri=str(data_artifact), artifact_sha256=artifact_hash)
     db.add(export)
-    db.add(AuditEvent(action="dataset.exported", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=payload.purpose, reason=payload.export_type + ":" + payload.format))
+    db.add(AuditEvent(action="dataset.exported", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=subject, purpose=payload.purpose, reason=payload.export_type + ":" + payload.format + f":{len(samples)} samples"))
     db.commit()
-    return {"dataset_id": dataset_id, "export_id": export.id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "artifact_sha256": artifact_hash, "artifact_uri": str(artifact), "status": "EXPORTED"}
+    return {"dataset_id": dataset_id, "export_id": export.id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "materialized_sha256": materialized_hash, "artifact_sha256": artifact_hash, "artifact_uri": str(data_artifact), "manifest_uri": str(manifest_artifact), "sample_count": len(samples), "status": "EXPORTED"}
 
 
 @app.post("/api/v1/assets/{asset_id}/ingest")

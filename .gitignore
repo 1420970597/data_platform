@@ -4,3 +4,4 @@ __pycache__/
 runtime/
 artifacts/
 .pytest_cache/
+*.db

@@ -1,0 +1,30 @@
+services:
+  api:
+    build: .
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://military:military@db:5432/military_platform
+      APP_ENV: development
+      SECRET_KEY: change-me-in-production
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - app_data:/app/data
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: military_platform
+      POSTGRES_USER: military
+      POSTGRES_PASSWORD: military
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U military -d military_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+volumes:
+  app_data:
+  postgres_data:

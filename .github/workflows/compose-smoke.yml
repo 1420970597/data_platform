@@ -1,0 +1,17 @@
+name: Compose Smoke
+on:
+  pull_request:
+    paths: ['Dockerfile','docker-compose.yml','app/**','requirements.txt']
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build
+      - run: |
+          for i in $(seq 1 30); do curl -fsS http://localhost:8000/api/v1/health && exit 0 || sleep 2; done
+          exit 1
+      - if: always()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down -v

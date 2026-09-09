@@ -246,3 +246,18 @@ class LineageRun(Base):
     config_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     code_commit: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class TrainingRun(Base):
+    """训练运行登记，绑定数据集、代码、镜像和输出工件。"""
+    __tablename__ = "training_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    dataset_id: Mapped[int] = mapped_column(Integer, index=True)
+    training_type: Mapped[str] = mapped_column(String(20))
+    code_commit: Mapped[str] = mapped_column(String(80))
+    image_digest: Mapped[str] = mapped_column(String(200))
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    resources: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_artifacts: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="REGISTERED")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

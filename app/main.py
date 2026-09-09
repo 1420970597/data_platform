@@ -11,8 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, LineageRun, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
-from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate, LineageRunCreate, QualityGateRequest
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, LineageRun, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample, TrainingRun
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate, LineageRunCreate, QualityGateRequest, TrainingRunCreate
 from .parsers import select_parser
 
 Base.metadata.create_all(bind=engine)
@@ -618,3 +618,29 @@ def get_lineage_run(run_id: str, db: Session = Depends(get_db)):
     """查询同一 run 的完整生命周期事件。"""
     rows = db.scalars(select(LineageRun).where(LineageRun.run_id == run_id).order_by(LineageRun.id)).all()
     return [{"run_id": r.run_id, "job_name": r.job_name, "event_type": r.event_type, "input_refs": r.input_refs, "output_refs": r.output_refs, "config_sha256": r.config_sha256, "code_commit": r.code_commit, "created_at": r.created_at} for r in rows]
+
+@app.post("/api/v1/training/runs", status_code=201)
+def register_training_run(payload: TrainingRunCreate, request: Request, db: Session = Depends(get_db)):
+    """登记训练运行；只有已批准数据集可绑定训练任务。"""
+    subject = actor(request, {"training_engineer", "data_steward"})
+    dataset = db.get(DatasetVersion, payload.dataset_id)
+    if not dataset:
+        raise HTTPException(404, "数据集不存在")
+    if dataset.approval_state != "APPROVED":
+        raise HTTPException(409, "训练运行只能使用已批准数据集")
+    if db.scalar(select(TrainingRun).where(TrainingRun.run_id == payload.run_id)):
+        raise HTTPException(409, "训练运行 ID 已登记")
+    run = TrainingRun(**payload.model_dump())
+    db.add(run)
+    db.add(AuditEvent(action="training.run_registered", entity_type="training_run", entity_id=payload.run_id, actor_subject=subject, purpose="training", reason=f"{payload.training_type}:{payload.status}"))
+    db.commit(); db.refresh(run)
+    return {"id": run.id, "run_id": run.run_id, "dataset_id": run.dataset_id, "training_type": run.training_type, "status": run.status, "created_at": run.created_at}
+
+@app.get("/api/v1/training/runs")
+def list_training_runs(dataset_id: int | None = None, db: Session = Depends(get_db)):
+    """查询训练运行元数据，不返回模型权重内容。"""
+    query = select(TrainingRun).order_by(TrainingRun.created_at.desc())
+    if dataset_id is not None:
+        query = query.where(TrainingRun.dataset_id == dataset_id)
+    rows = db.scalars(query).all()
+    return [{"id": r.id, "run_id": r.run_id, "dataset_id": r.dataset_id, "training_type": r.training_type, "code_commit": r.code_commit, "image_digest": r.image_digest, "parameters": r.parameters, "resources": r.resources, "output_artifacts": r.output_artifacts, "status": r.status, "created_at": r.created_at} for r in rows]

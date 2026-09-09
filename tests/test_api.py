@@ -229,6 +229,14 @@ def test_review_detail_and_evidence_query_expose_provenance():
     assert evidence.status_code == 200
     assert isinstance(evidence.json(), list)
 
+def test_training_run_requires_approved_dataset_and_records_lineage():
+    dataset = client.post('/api/v1/datasets', json={'name':'训练运行数据集','purpose':'LORA','manifest_hash':'2'*64,'sample_count':1,'coverage_report':{'preparation':1}}).json()
+    assert client.post(f"/api/v1/training/runs", json={'run_id':'run-before-approval','dataset_id':dataset['id'],'training_type':'LORA','code_commit':'abc','image_digest':'sha256:test'}).status_code == 409
+    assert client.post(f"/api/v1/datasets/{dataset['id']}/approve").status_code == 200
+    response = client.post('/api/v1/training/runs', json={'run_id':'run-approved-1','dataset_id':dataset['id'],'training_type':'LORA','code_commit':'abc123','image_digest':'sha256:test','parameters':{'rank':16},'resources':{'gpu':'A10'},'output_artifacts':['s3://internal/adapter']})
+    assert response.status_code == 201
+    assert client.get('/api/v1/training/runs?dataset_id='+str(dataset['id'])).json()[0]['status'] == 'REGISTERED'
+
 def test_production_policy_enforces_actor_roles(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, 'require_auth', True)

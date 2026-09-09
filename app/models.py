@@ -134,3 +134,16 @@ class DedupeMatch(Base):
     detector_version: Mapped[str] = mapped_column(String(50), default="exact-v1")
     decision: Mapped[str] = mapped_column(String(20), default="ISOLATE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class PackageExport(Base):
+    """已批准数据集的不可变导出工件登记。"""
+    __tablename__ = "package_exports"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(Integer, index=True)
+    export_type: Mapped[str] = mapped_column(String(20))
+    format: Mapped[str] = mapped_column(String(20))
+    artifact_uri: Mapped[str] = mapped_column(String(500))
+    artifact_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), default="EXPORTED")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

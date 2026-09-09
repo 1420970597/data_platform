@@ -147,3 +147,54 @@ class PackageExport(Base):
     artifact_sha256: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="EXPORTED")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class EvidenceSpan(Base):
+    """可定位的证据片段。"""
+    __tablename__ = "evidence_spans"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_id: Mapped[int] = mapped_column(Integer, index=True)
+    locator: Mapped[dict] = mapped_column(JSON, default=dict)
+    text_or_region: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class TrainingSample(Base):
+    """证据约束监督样本。"""
+    __tablename__ = "training_samples"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_type: Mapped[str] = mapped_column(String(40))
+    input_refs: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence_refs: Mapped[list] = mapped_column(JSON, default=list)
+    target: Mapped[dict] = mapped_column(JSON, default=dict)
+    scenario_context: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), default="CANDIDATE")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class RewardSpec(Base):
+    """可回放的 GRPO 奖励规范。"""
+    __tablename__ = "reward_specs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    version: Mapped[str] = mapped_column(String(40))
+    reward_weights: Mapped[dict] = mapped_column(JSON, default=dict)
+    thresholds: Mapped[dict] = mapped_column(JSON, default=dict)
+    hard_constraints: Mapped[list] = mapped_column(JSON, default=list)
+    rollout_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    lifecycle_state: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class GRPOEpisode(Base):
+    """提示、候选组、验证结果和奖励证据。"""
+    __tablename__ = "grpo_episodes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    prompt: Mapped[str] = mapped_column(Text)
+    context_refs: Mapped[list] = mapped_column(JSON, default=list)
+    candidate_group: Mapped[list] = mapped_column(JSON, default=list)
+    verifier_results: Mapped[list] = mapped_column(JSON, default=list)
+    reward_vector: Mapped[dict] = mapped_column(JSON, default=dict)
+    scalar_reward: Mapped[float] = mapped_column(default=0.0)
+    reward_spec_id: Mapped[int] = mapped_column(Integer)
+    scenario_context: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), default="VERIFIED")
+    replay_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

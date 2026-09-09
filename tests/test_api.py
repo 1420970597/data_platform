@@ -101,3 +101,15 @@ def test_scenario_coverage_reports_dimensions():
     assert 'operation_phase' in coverage.json()
     assert 'service_domains' in coverage.json()
     assert 'platform_mode' in coverage.json()
+
+def test_reward_spec_and_episode_quarantine():
+    spec = client.post('/api/v1/reward-specs', json={'name':'保障证据奖励','version':'1.0','reward_weights':{'evidence':0.4,'factuality':0.4,'boundary_compliance':0.2},'hard_constraints':['no_targeting']})
+    assert spec.status_code == 201
+    episode = client.post('/api/v1/grpo/episodes', json={'prompt':'核验保障记录完整性','context_refs':['content:demo'],'candidate_group':[{'text':'候选一'},{'text':'候选二'}],'verifier_results':[{'hard_constraint_failed':True}],'reward_vector':{'evidence':0,'factuality':0,'boundary_compliance':0},'scalar_reward':0.8,'reward_spec_id':spec.json()['id'],'scenario_context':{'operation_phase':'wartime_support','service_domains':['joint_support'],'platform_mode':'manned_unmanned_team'}})
+    assert episode.status_code == 201
+    assert episode.json()['status'] == 'QUARANTINED'
+
+def test_audit_endpoint_is_available():
+    response = client.get('/api/v1/audit?limit=5')
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)

@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, PackageExport, PIIFinding, QualityAssessment, ReviewTask, SourceAsset
-from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, EvidenceSpan, GRPOEpisode, PackageExport, PIIFinding, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
@@ -305,3 +305,54 @@ def scenario_coverage(db: Session = Depends(get_db)):
             result["service_domains"][domain] = result["service_domains"].get(domain, 0) + 1
         result["platform_mode"][asset.platform_mode] = result["platform_mode"].get(asset.platform_mode, 0) + 1
     return result
+
+
+@app.get("/api/v1/audit")
+def list_audit(limit: int = 100, db: Session = Depends(get_db)):
+    """返回最近审计事件，不包含原始正文。"""
+    rows = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(min(limit, 500))).all()
+    return [{"id": r.id, "action": r.action, "entity_type": r.entity_type, "entity_id": r.entity_id, "actor_subject": r.actor_subject, "purpose": r.purpose, "reason": r.reason, "created_at": r.created_at} for r in rows]
+
+@app.post("/api/v1/evidence", status_code=201)
+def create_evidence(payload: EvidenceCreate, request: Request, db: Session = Depends(get_db)):
+    """创建可定位证据片段，供监督样本引用。"""
+    if not db.get(ContentObject, payload.content_id): raise HTTPException(404, "内容对象不存在")
+    evidence = EvidenceSpan(**payload.model_dump())
+    db.add(evidence); db.flush()
+    db.add(AuditEvent(action="evidence.created", entity_type="evidence_span", entity_id=str(evidence.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="curation", reason="创建证据片段"))
+    db.commit(); return {"id": evidence.id, "content_id": evidence.content_id, "locator": evidence.locator, "confidence": evidence.confidence}
+
+@app.post("/api/v1/samples", status_code=201)
+def create_sample(payload: SampleCreate, request: Request, db: Session = Depends(get_db)):
+    """创建证据约束监督样本；禁止无证据样本进入候选。"""
+    evidence = db.scalars(select(EvidenceSpan).where(EvidenceSpan.id.in_(payload.evidence_refs))).all()
+    if len(evidence) != len(set(payload.evidence_refs)): raise HTTPException(422, "证据片段不存在或重复")
+    sample = TrainingSample(**payload.model_dump())
+    db.add(sample); db.flush()
+    db.add(AuditEvent(action="sample.built", entity_type="training_sample", entity_id=str(sample.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="curation", reason=payload.task_type))
+    db.commit(); return {"id": sample.id, "task_type": sample.task_type, "status": sample.status, "evidence_refs": sample.evidence_refs}
+
+@app.post("/api/v1/reward-specs", status_code=201)
+def create_reward_spec(payload: RewardSpecCreate, request: Request, db: Session = Depends(get_db)):
+    """创建版本化奖励规范，硬约束由平台保留。"""
+    required = {"evidence", "factuality", "boundary_compliance"}
+    if not required.issubset(payload.reward_weights): raise HTTPException(422, "奖励权重至少包含 evidence、factuality、boundary_compliance")
+    spec = RewardSpec(**payload.model_dump())
+    db.add(spec); db.flush()
+    db.add(AuditEvent(action="reward_spec.created", entity_type="reward_spec", entity_id=str(spec.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="rl_post_training", reason=payload.name + ":" + payload.version))
+    db.commit(); return {"id": spec.id, "name": spec.name, "version": spec.version, "lifecycle_state": spec.lifecycle_state}
+
+@app.post("/api/v1/grpo/episodes", status_code=201)
+def create_episode(payload: EpisodeCreate, request: Request, db: Session = Depends(get_db)):
+    """保存可回放 GRPO episode；硬约束失败的候选只能隔离。"""
+    spec = db.get(RewardSpec, payload.reward_spec_id)
+    if not spec: raise HTTPException(404, "RewardSpec 不存在")
+    if len(payload.candidate_group) < 2: raise HTTPException(422, "候选组至少包含两个候选")
+    import json
+    replay_payload = payload.model_dump()
+    replay_hash = hashlib.sha256(json.dumps(replay_payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    episode = GRPOEpisode(**payload.model_dump(), replay_hash=replay_hash)
+    if any(item.get("hard_constraint_failed") for item in payload.verifier_results): episode.status = "QUARANTINED"; episode.scalar_reward = 0.0
+    db.add(episode); db.flush()
+    db.add(AuditEvent(action="reward.replayed", entity_type="grpo_episode", entity_id=str(episode.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="rl_post_training", reason=episode.status))
+    db.commit(); return {"id": episode.id, "status": episode.status, "replay_hash": replay_hash, "scalar_reward": episode.scalar_reward}

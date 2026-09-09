@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import re
 import shutil
+import json
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +13,7 @@ from .db import Base, engine, get_db
 from .config import settings
 from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, LineageRun, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
 from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate, LineageRunCreate
+from .parsers import select_parser
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
@@ -234,7 +236,7 @@ def ingest_asset(asset_id: int, request: Request, file: UploadFile = File(...), 
     asset.raw_object_uri = str(path)
     asset.lifecycle_status = "INGESTED"
     suffix = path.suffix.lower()
-    modality = "text" if suffix in {".txt", ".md", ".csv", ".json", ".html"} else "document"
+    modality = "text" if suffix in {".txt", ".md", ".csv", ".json", ".html"} else ("image" if suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"} else "document")
     content = ContentObject(asset_id=asset_id, modality=modality, content_uri=str(path), normalized_sha256=digest, parser_id="ingest-pass-through", parser_version="1.0", parser_confidence=1.0, locator={"filename": file.filename}, status="NORMALIZED")
     db.add(content); db.flush()
     decision = "ALLOW" if asset.sensitivity_tier != "prohibited" else "BLOCK"
@@ -248,6 +250,15 @@ def list_contents(asset_id: int, db: Session = Depends(get_db)):
     """列出资产的标准化内容对象和质量结论。"""
     rows = db.scalars(select(ContentObject).where(ContentObject.asset_id == asset_id).order_by(ContentObject.created_at.desc())).all()
     return [{"id": row.id, "asset_id": row.asset_id, "modality": row.modality, "parser_version": row.parser_version, "confidence": row.parser_confidence, "status": row.status} for row in rows]
+
+@app.get("/api/v1/parsers")
+def list_parsers():
+    """公开当前解析器插件能力，便于调度器选择 Docling 或 OCR Worker。"""
+    from .parsers import PARSER_PLUGINS
+    samples = {"text": ".txt", "document": ".pdf", "image": ".png"}
+    return [{"parser_id": plugin.parser_id, "version": plugin.parser_version,
+             "supported_modalities": [modality for modality, suffix in samples.items() if plugin.supports(modality, suffix)]}
+            for plugin in PARSER_PLUGINS]
 
 
 @app.get("/api/v1/contracts", response_model=list[ContractRead])
@@ -445,37 +456,30 @@ def get_lineage(entity_type: str, entity_id: str, db: Session = Depends(get_db))
 
 @app.post("/api/v1/contents/{content_id}/parse")
 def parse_content(content_id: int, request: Request, db: Session = Depends(get_db)):
-    """运行轻量本地解析器，生成段落证据；复杂文档由后续插件替换。"""
+    """运行注册的解析器插件，生成段落证据和多模态 provenance。"""
     content = db.get(ContentObject, content_id)
     if not content:
         raise HTTPException(404, "内容对象不存在")
     path = Path(content.content_uri)
     if not path.exists():
         raise HTTPException(422, "原件文件不存在")
-    raw = path.read_text(errors="ignore") if content.modality == "text" else ""
-    if not raw:
-        content.parser_id = "pending-document-parser"
-        content.parser_version = "0.1"
-        content.parser_confidence = 0.0
-        content.status = "REVIEW_PENDING"
-        db.add(QualityAssessment(content_id=content_id, decision="REVIEW", scores={"parser_confidence": 0.0}, reason="非文本文档等待 Docling/PaddleOCR 插件"))
-        db.commit()
-        return {"content_id": content_id, "status": content.status, "parser_id": content.parser_id, "evidence_count": 0}
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n|\r\n", raw) if part.strip()]
+    parser = select_parser(path, content.modality)
+    if parser is None:
+        raise HTTPException(422, "没有兼容当前内容模态的解析器插件")
+    result = parser.parse(path, content.modality)
     evidence_count = 0
-    for index, paragraph in enumerate(paragraphs):
-        if len(paragraph) < 2:
-            continue
-        db.add(EvidenceSpan(content_id=content_id, locator={"paragraph": index, "char_start": raw.find(paragraph), "char_end": raw.find(paragraph) + len(paragraph)}, text_or_region=paragraph, confidence=0.95))
+    for paragraph in result.paragraphs:
+        db.add(EvidenceSpan(content_id=content_id, locator={k: v for k, v in paragraph.items() if k != "text" and k != "confidence"}, text_or_region=paragraph["text"], confidence=paragraph.get("confidence", result.confidence)))
         evidence_count += 1
-    content.parser_id = "local-text-parser"
-    content.parser_version = "1.0"
-    content.parser_confidence = 0.95
-    content.status = "PARSED"
-    db.add(QualityAssessment(content_id=content_id, decision="ALLOW" if evidence_count else "REVIEW", scores={"paragraph_count": evidence_count, "parser_confidence": 0.95}, reason="本地文本解析完成"))
+    content.parser_id = result.parser_id
+    content.parser_version = result.parser_version
+    content.parser_confidence = result.confidence
+    content.locator = {**(content.locator or {}), "provenance": result.provenance}
+    content.status = result.status
+    db.add(QualityAssessment(content_id=content_id, decision="ALLOW" if result.status == "PARSED" else "REVIEW", scores={"paragraph_count": evidence_count, "parser_confidence": result.confidence, **{k: v for k, v in result.provenance.items() if isinstance(v, (int, float))}}, reason="解析器完成" if result.status == "PARSED" else result.provenance.get("pending_reason", "等待异步解析器")))
     db.add(AuditEvent(action="asset.parsed", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="normalization", reason=f"生成 {evidence_count} 个证据片段"))
     db.commit()
-    return {"content_id": content_id, "status": content.status, "parser_id": content.parser_id, "parser_version": content.parser_version, "evidence_count": evidence_count}
+    return {"content_id": content_id, "status": content.status, "parser_id": content.parser_id, "parser_version": content.parser_version, "parser_confidence": content.parser_confidence, "provenance": result.provenance, "evidence_count": evidence_count}
 
 
 @app.post("/api/v1/datasets/{dataset_id}/samples", status_code=201)

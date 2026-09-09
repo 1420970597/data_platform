@@ -191,6 +191,20 @@ def test_development_policy_allows_critical_actions_without_identity():
     response = client.get('/api/v1/health')
     assert response.status_code == 200
 
+def test_parser_registry_and_image_provenance_pending():
+    parsers = client.get('/api/v1/parsers')
+    assert parsers.status_code == 200
+    assert {item['parser_id'] for item in parsers.json()} >= {'local-text-parser', 'docling', 'paddleocr-ppstructure'}
+    import hashlib
+    image = b'fake-png-for-parser-test'
+    digest = hashlib.sha256(image).hexdigest()
+    asset = client.post('/api/v1/assets', json={'provider':'图像解析测试','source_uri':'approved://demo/image','source_type':'image','license_id':'lic-image','allowed_use':'review_only','operation_phase':'preparation','service_domains':['air'],'platform_mode':'unmanned','human_authority':'reviewer','raw_sha256':digest,'owner_subject':'demo'}).json()
+    ingested = client.post(f"/api/v1/assets/{asset['id']}/ingest", files={'file':('map.png',image,'image/png')}).json()
+    parsed = client.post(f"/api/v1/contents/{ingested['content_id']}/parse")
+    assert parsed.status_code == 200
+    assert parsed.json()['status'] == 'REVIEW_PENDING'
+    assert parsed.json()['provenance']['pending_reason']
+
 def test_production_policy_enforces_actor_roles(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, 'require_auth', True)

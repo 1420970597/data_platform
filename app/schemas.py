@@ -48,3 +48,12 @@ class DatasetRead(DatasetCreate):
     approval_state: str
     created_at: datetime
     model_config = {"from_attributes": True}
+
+class ReviewDecision(BaseModel):
+    decision: str = Field(pattern="^(approve|reject|quarantine)$")
+    notes: str = ""
+
+class ExportRequest(BaseModel):
+    export_type: str = Field(pattern="^(LORA|GRPO)$")
+    format: str = Field(default="jsonl", pattern="^(jsonl|parquet)$")
+    purpose: str

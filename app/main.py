@@ -34,6 +34,8 @@ def metrics(db: Session = Depends(get_db)):
         "pending_reviews": db.scalar(select(func.count(ReviewTask.id)).where(ReviewTask.status == "PENDING")) or 0,
         "datasets": db.scalar(select(func.count(DatasetVersion.id))) or 0,
         "approved_datasets": db.scalar(select(func.count(DatasetVersion.id)).where(DatasetVersion.approval_state == "APPROVED")) or 0,
+        "eval_only_traces": db.scalar(select(func.count(ProductionTrace.id)).where(ProductionTrace.status == "EVAL_ONLY")) or 0,
+        "audit_events": db.scalar(select(func.count(AuditEvent.id))) or 0,
     }
 
 @app.get("/api/v1/assets", response_model=list[AssetRead])
@@ -453,3 +455,30 @@ def list_dataset_samples(dataset_id: int, db: Session = Depends(get_db)):
     if not db.get(DatasetVersion, dataset_id): raise HTTPException(404, "数据集不存在")
     rows = db.scalars(select(DatasetSample).where(DatasetSample.dataset_id == dataset_id).order_by(DatasetSample.id)).all()
     return [{"id": row.id, "sample_id": row.sample_id, "split": row.split} for row in rows]
+
+
+@app.get("/api/v1/exports/{export_id}/download")
+def download_export(export_id: int, db: Session = Depends(get_db)):
+    """下载已经生成的 manifest；路径来自数据库且必须位于数据目录。"""
+    export = db.get(PackageExport, export_id)
+    if not export: raise HTTPException(404, "导出工件不存在")
+    path = Path(export.artifact_uri).resolve()
+    export_root = (Path(settings.data_dir) / "exports").resolve()
+    if export_root not in path.parents or not path.is_file(): raise HTTPException(404, "导出文件不可用")
+    return FileResponse(path, media_type="application/json", filename=path.name)
+
+@app.get("/api/v1/health/dependencies")
+def dependency_health(db: Session = Depends(get_db)):
+    """检查数据库和数据目录等运行依赖。"""
+    try:
+        db.execute(select(func.count(SourceAsset.id)))
+        db_status = "ok"
+    except Exception:
+        db_status = "error"
+    data_path = Path(settings.data_dir)
+    try:
+        data_path.mkdir(parents=True, exist_ok=True)
+        data_status = "ok"
+    except OSError:
+        data_status = "error"
+    return {"status": "ok" if db_status == data_status == "ok" else "degraded", "database": db_status, "data_dir": data_status}

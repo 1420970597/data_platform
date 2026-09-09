@@ -94,3 +94,10 @@ def test_export_creates_hashed_manifest():
     result = client.post(f"/api/v1/datasets/{dataset['id']}/exports", json={'export_type':'LORA','format':'jsonl','purpose':'LORA'})
     assert result.status_code == 200
     assert len(result.json()['artifact_sha256']) == 64
+
+def test_scenario_coverage_reports_dimensions():
+    coverage = client.get('/api/v1/metrics/scenario-coverage')
+    assert coverage.status_code == 200
+    assert 'operation_phase' in coverage.json()
+    assert 'service_domains' in coverage.json()
+    assert 'platform_mode' in coverage.json()

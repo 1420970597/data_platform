@@ -266,3 +266,42 @@ def dedupe_content(content_id: int, request: Request, db: Session = Depends(get_
     db.add(AuditEvent(action="dedupe.completed", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="quality", reason=f"精确命中 {len(result)} 项"))
     db.commit()
     return {"content_id": content_id, "matches": result, "decision": "ISOLATE" if result else "ALLOW"}
+
+
+@app.post("/api/v1/contents/{content_id}/semantic-dedupe")
+def semantic_dedupe(content_id: int, request: Request, db: Session = Depends(get_db)):
+    """用归一化 token Jaccard 召回文本近重复，算法可替换为向量索引。"""
+    content = db.get(ContentObject, content_id)
+    if not content:
+        raise HTTPException(404, "内容对象不存在")
+    path = Path(content.content_uri)
+    text = path.read_text(errors="ignore") if path.exists() and content.modality == "text" else ""
+    tokens = set(re.findall(r"[\w\u4e00-\u9fff]{2,}", text.lower()))
+    matches = []
+    candidates = db.scalars(select(ContentObject).where(ContentObject.modality == "text", ContentObject.id != content_id)).all()
+    for candidate in candidates:
+        candidate_path = Path(candidate.content_uri)
+        candidate_text = candidate_path.read_text(errors="ignore") if candidate_path.exists() else ""
+        candidate_tokens = set(re.findall(r"[\w\u4e00-\u9fff]{2,}", candidate_text.lower()))
+        union = tokens | candidate_tokens
+        similarity = len(tokens & candidate_tokens) / len(union) if union else 0.0
+        if similarity >= 0.8:
+            db.add(DedupeMatch(content_id=content_id, matched_content_id=candidate.id, layer="semantic", similarity=similarity, detector_version="jaccard-v1", decision="ISOLATE"))
+            matches.append({"matched_content_id": candidate.id, "similarity": round(similarity, 4), "layer": "semantic"})
+    if matches:
+        content.status = "QUARANTINED"
+    db.add(AuditEvent(action="dedupe.semantic_completed", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="quality", reason=f"语义近重复命中 {len(matches)} 项"))
+    db.commit()
+    return {"content_id": content_id, "detector_version": "jaccard-v1", "matches": matches, "decision": "ISOLATE" if matches else "ALLOW"}
+
+@app.get("/api/v1/metrics/scenario-coverage")
+def scenario_coverage(db: Session = Depends(get_db)):
+    """按阶段、军兵种和平台形态统计已登记资产覆盖。"""
+    assets = db.scalars(select(SourceAsset)).all()
+    result = {"total": len(assets), "operation_phase": {}, "service_domains": {}, "platform_mode": {}}
+    for asset in assets:
+        result["operation_phase"][asset.operation_phase] = result["operation_phase"].get(asset.operation_phase, 0) + 1
+        for domain in asset.service_domains or []:
+            result["service_domains"][domain] = result["service_domains"].get(domain, 0) + 1
+        result["platform_mode"][asset.platform_mode] = result["platform_mode"].get(asset.platform_mode, 0) + 1
+    return result

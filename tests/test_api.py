@@ -69,3 +69,11 @@ def test_ingest_preserves_hash_and_creates_content():
     assert response.status_code == 200
     assert response.json()['sha256'] == digest
     assert client.get(f"/api/v1/assets/{asset['id']}/contents").json()[0]['modality'] == 'text'
+
+def test_contract_check_records_gate_result():
+    contract = client.post('/api/v1/contracts', json={'name':'军事场景基础契约','version':'1.0','lifecycle_state':'ACTIVE','quality_assertions':{'coverage_required':True}})
+    assert contract.status_code == 201
+    dataset = client.post('/api/v1/datasets', json={'name':'战时保障记录集','purpose':'GRPO','manifest_hash':'d'*64,'sample_count':3,'coverage_report':{'wartime_support':3}}).json()
+    result = client.post(f"/api/v1/datasets/{dataset['id']}/contract-check?contract_id={contract.json()['id']}")
+    assert result.status_code == 200
+    assert result.json()['result'] == 'PASS'

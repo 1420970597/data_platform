@@ -86,3 +86,26 @@ class QualityAssessment(Base):
     reason: Mapped[str] = mapped_column(Text, default="")
     rule_version: Mapped[str] = mapped_column(String(60), default="quality-v1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class DataContract(Base):
+    """数据契约及其版本化断言。"""
+    __tablename__ = "data_contracts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    version: Mapped[str] = mapped_column(String(40))
+    lifecycle_state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    schema_assertions: Mapped[dict] = mapped_column(JSON, default=dict)
+    freshness_assertions: Mapped[dict] = mapped_column(JSON, default=dict)
+    quality_assertions: Mapped[dict] = mapped_column(JSON, default=dict)
+    failure_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class ContractCheck(Base):
+    """数据集执行契约后的不可变结果。"""
+    __tablename__ = "contract_checks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(Integer, index=True)
+    contract_id: Mapped[int] = mapped_column(Integer, index=True)
+    result: Mapped[str] = mapped_column(String(20))
+    observed: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

@@ -71,3 +71,35 @@ class ContractRead(ContractCreate):
     id: int
     created_at: datetime
     model_config = {"from_attributes": True}
+
+class EvidenceCreate(BaseModel):
+    content_id: int
+    locator: dict = {}
+    text_or_region: str
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+class SampleCreate(BaseModel):
+    task_type: str = Field(pattern="^(extract|cite_qa|compare|summarize|correct|abstain)$")
+    input_refs: dict = {}
+    evidence_refs: list[int] = Field(min_length=1)
+    target: dict
+    scenario_context: dict
+
+class RewardSpecCreate(BaseModel):
+    name: str
+    version: str
+    reward_weights: dict
+    thresholds: dict = {}
+    hard_constraints: list[str] = []
+    rollout_config: dict = {}
+    lifecycle_state: str = Field(default="DRAFT", pattern="^(DRAFT|ACTIVE|RETIRED)$")
+
+class EpisodeCreate(BaseModel):
+    prompt: str
+    context_refs: list = []
+    candidate_group: list[dict] = Field(min_length=2)
+    verifier_results: list[dict] = []
+    reward_vector: dict
+    scalar_reward: float
+    reward_spec_id: int
+    scenario_context: dict

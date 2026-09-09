@@ -57,3 +57,17 @@ class ExportRequest(BaseModel):
     export_type: str = Field(pattern="^(LORA|GRPO)$")
     format: str = Field(default="jsonl", pattern="^(jsonl|parquet)$")
     purpose: str
+
+class ContractCreate(BaseModel):
+    name: str
+    version: str
+    lifecycle_state: str = Field(default="PENDING", pattern="^(PENDING|ACTIVE|RETIRED)$")
+    schema_assertions: dict = {}
+    freshness_assertions: dict = {}
+    quality_assertions: dict = {}
+    failure_policy: dict = {}
+
+class ContractRead(ContractCreate):
+    id: int
+    created_at: datetime
+    model_config = {"from_attributes": True}

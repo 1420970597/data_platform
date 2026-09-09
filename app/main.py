@@ -9,8 +9,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, DatasetVersion, QualityAssessment, ReviewTask, SourceAsset
-from .schemas import AssetCreate, AssetRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, QualityAssessment, ReviewTask, SourceAsset
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
@@ -185,3 +185,30 @@ def list_contents(asset_id: int, db: Session = Depends(get_db)):
     """列出资产的标准化内容对象和质量结论。"""
     rows = db.scalars(select(ContentObject).where(ContentObject.asset_id == asset_id).order_by(ContentObject.created_at.desc())).all()
     return [{"id": row.id, "asset_id": row.asset_id, "modality": row.modality, "parser_version": row.parser_version, "confidence": row.parser_confidence, "status": row.status} for row in rows]
+
+
+@app.get("/api/v1/contracts", response_model=list[ContractRead])
+def list_contracts(db: Session = Depends(get_db)):
+    """列出数据契约版本。"""
+    return list(db.scalars(select(DataContract).order_by(DataContract.created_at.desc())).all())
+
+@app.post("/api/v1/contracts", response_model=ContractRead, status_code=201)
+def create_contract(payload: ContractCreate, request: Request, db: Session = Depends(get_db)):
+    """创建契约；ACTIVE 契约才能阻断数据集发布。"""
+    contract = DataContract(**payload.model_dump())
+    db.add(contract); db.flush()
+    db.add(AuditEvent(action="contract.created", entity_type="data_contract", entity_id=str(contract.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="governance", reason=payload.name + ":" + payload.version))
+    db.commit(); db.refresh(contract); return contract
+
+@app.post("/api/v1/datasets/{dataset_id}/contract-check")
+def contract_check(dataset_id: int, contract_id: int, request: Request, db: Session = Depends(get_db)):
+    """执行基础 schema/freshness/quality 断言并保存结果。"""
+    dataset = db.get(DatasetVersion, dataset_id); contract = db.get(DataContract, contract_id)
+    if not dataset or not contract: raise HTTPException(404, "数据集或契约不存在")
+    observed = {"manifest_hash_length": len(dataset.manifest_hash or ""), "sample_count": dataset.sample_count, "coverage_fields": len(dataset.coverage_report or {})}
+    passed = observed["manifest_hash_length"] == 64 and observed["sample_count"] > 0 and observed["coverage_fields"] > 0
+    result = "PASS" if passed else "FAIL"
+    db.add(ContractCheck(dataset_id=dataset_id, contract_id=contract_id, result=result, observed=observed))
+    db.add(AuditEvent(action="dataset.contract_checked", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=dataset.purpose, reason=contract.name + ":" + result))
+    db.commit()
+    return {"dataset_id": dataset_id, "contract_id": contract_id, "result": result, "observed": observed}

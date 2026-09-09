@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
-from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, LineageRun, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate, LineageRunCreate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
@@ -499,3 +499,23 @@ def content_pii_findings(content_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "内容对象不存在")
     rows = db.scalars(select(PIIFinding).where(PIIFinding.content_id == content_id).order_by(PIIFinding.created_at.desc())).all()
     return [{"id": row.id, "entity_type": row.entity_type, "locator": row.locator, "confidence": row.confidence, "action": row.action, "review_state": row.review_state, "detector_version": row.detector_version} for row in rows]
+
+
+@app.post("/api/v1/lineage/runs", status_code=201)
+def create_lineage_run(payload: LineageRunCreate, request: Request, db: Session = Depends(get_db)):
+    """记录 OpenLineage 生命周期事件，并禁止终态后继续写入。"""
+    terminal = {"COMPLETE", "FAIL", "ABORT"}
+    previous = db.scalars(select(LineageRun).where(LineageRun.run_id == payload.run_id).order_by(LineageRun.id.desc())).first()
+    if previous and previous.event_type in terminal:
+        raise HTTPException(409, "该 run 已进入终态")
+    event = LineageRun(**payload.model_dump())
+    db.add(event)
+    db.add(AuditEvent(action="lineage.run_event", entity_type="lineage_run", entity_id=payload.run_id, actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="lineage", reason=payload.event_type + ":" + payload.job_name))
+    db.commit()
+    return {"run_id": event.run_id, "job_name": event.job_name, "event_type": event.event_type, "created_at": event.created_at}
+
+@app.get("/api/v1/lineage/runs/{run_id}")
+def get_lineage_run(run_id: str, db: Session = Depends(get_db)):
+    """查询同一 run 的完整生命周期事件。"""
+    rows = db.scalars(select(LineageRun).where(LineageRun.run_id == run_id).order_by(LineageRun.id)).all()
+    return [{"run_id": r.run_id, "job_name": r.job_name, "event_type": r.event_type, "input_refs": r.input_refs, "output_refs": r.output_refs, "config_sha256": r.config_sha256, "code_commit": r.code_commit, "created_at": r.created_at} for r in rows]

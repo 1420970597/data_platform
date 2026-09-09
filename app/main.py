@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
+from .config import settings
 from .models import AuditEvent, ContentObject, DatasetVersion, QualityAssessment, ReviewTask, SourceAsset
 from .schemas import AssetCreate, AssetRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
 
@@ -156,7 +157,7 @@ def ingest_asset(asset_id: int, request: Request, file: UploadFile = File(...), 
         raise HTTPException(404, "资产不存在")
     if asset.lifecycle_status in {"QUARANTINED", "WITHDRAWN"}:
         raise HTTPException(409, "资产处于隔离或撤回状态，不能导入")
-    base = Path("/app/data/assets")
+    base = Path(settings.data_dir) / "assets"
     base.mkdir(parents=True, exist_ok=True)
     target = base / str(asset_id)
     target.mkdir(parents=True, exist_ok=True)

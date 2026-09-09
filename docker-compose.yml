@@ -4,9 +4,11 @@ services:
     ports:
       - "${APP_PORT:-8000}:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://military:military@db:5432/military_platform
-      APP_ENV: development
-      SECRET_KEY: change-me-in-production
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://military:military@db:5432/military_platform}
+      APP_ENV: ${APP_ENV:-development}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-false}
+      DATA_DIR: ${DATA_DIR:-./data}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
       interval: 10s

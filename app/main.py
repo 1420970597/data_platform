@@ -395,7 +395,10 @@ def create_lineage(parent_type: str, parent_id: str, child_type: str, child_id: 
 
 @app.get("/api/v1/lineage/{entity_type}/{entity_id}")
 def get_lineage(entity_type: str, entity_id: str, db: Session = Depends(get_db)):
-    """查询实体上下游血缘。"""
+    """查询实体上下游血缘；runs 路径兼容生命周期查询。"""
+    if entity_type == "runs":
+        rows = db.scalars(select(LineageRun).where(LineageRun.run_id == entity_id).order_by(LineageRun.id)).all()
+        return [{"run_id": r.run_id, "job_name": r.job_name, "event_type": r.event_type, "input_refs": r.input_refs, "output_refs": r.output_refs, "config_sha256": r.config_sha256, "code_commit": r.code_commit, "created_at": r.created_at} for r in rows]
     upstream = db.scalars(select(LineageEdge).where(LineageEdge.child_type == entity_type, LineageEdge.child_id == entity_id)).all()
     downstream = db.scalars(select(LineageEdge).where(LineageEdge.parent_type == entity_type, LineageEdge.parent_id == entity_id)).all()
     pack=lambda e: {"id": e.id, "parent_type": e.parent_type, "parent_id": e.parent_id, "child_type": e.child_type, "child_id": e.child_id, "relation": e.relation}

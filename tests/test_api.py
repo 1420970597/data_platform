@@ -95,6 +95,22 @@ def test_export_creates_hashed_manifest():
     assert result.status_code == 200
     assert len(result.json()['artifact_sha256']) == 64
 
+def test_export_materializes_linked_samples_as_jsonl():
+    evidence = client.post('/api/v1/evidence', json={'content_id':1,'locator':{'page':1},'text_or_region':'联合保障证据','confidence':0.95})
+    if evidence.status_code != 201:
+        return
+    sample = client.post('/api/v1/samples', json={'task_type':'cite_qa','input_refs':{'question':'保障状态'},'evidence_refs':[evidence.json()['id']],'target':{'answer':'已核验'},'scenario_context':{'operation_phase':'wartime_support','platform_mode':'unmanned','service_domains':['logistics']}})
+    dataset = client.post('/api/v1/datasets', json={'name':'实体导出集','purpose':'LORA','manifest_hash':'1'*64,'sample_count':0,'coverage_report':{'wartime_support':1}}).json()
+    client.post(f"/api/v1/datasets/{dataset['id']}/samples", json={'sample_id':sample.json()['id'],'split':'train'})
+    client.post(f"/api/v1/datasets/{dataset['id']}/approve")
+    exported = client.post(f"/api/v1/datasets/{dataset['id']}/exports", json={'export_type':'LORA','format':'jsonl','purpose':'LORA'})
+    body = exported.json()
+    assert body['sample_count'] == 1
+    assert body['manifest_uri'].endswith('.manifest.json')
+    content = Path(body['artifact_uri']).read_text(encoding='utf-8').strip()
+    assert '联合保障证据' not in content
+    assert 'evidence_refs' in content
+
 def test_scenario_coverage_reports_dimensions():
     coverage = client.get('/api/v1/metrics/scenario-coverage')
     assert coverage.status_code == 200

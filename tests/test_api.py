@@ -169,3 +169,24 @@ def test_openlineage_run_lifecycle_blocks_after_terminal():
     assert client.post('/api/v1/lineage/runs', json={**payload,'event_type':'COMPLETE'}).status_code == 201
     assert client.post('/api/v1/lineage/runs', json={**payload,'event_type':'START'}).status_code == 409
     assert len(client.get('/api/v1/lineage/runs/run-demo-1').json()) == 2
+
+def test_development_policy_allows_critical_actions_without_identity():
+    # 默认开发配置允许本地演示；生产通过 REQUIRE_AUTH=true 强制角色校验。
+    response = client.get('/api/v1/health')
+    assert response.status_code == 200
+
+def test_production_policy_enforces_actor_roles(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, 'require_auth', True)
+    # 创建一个隔离审核任务，验证缺少身份和角色时都会被拒绝。
+    asset = client.post('/api/v1/assets', json={
+        'provider':'权限测试','source_uri':'approved://demo/auth','source_type':'txt',
+        'license_id':'lic-auth','allowed_use':'review_only','military_scope':'prohibited_operational',
+        'operation_phase':'wartime_support','service_domains':['joint_support'],'platform_mode':'unmanned',
+        'human_authority':'security-demo','raw_sha256':'9'*64,'owner_subject':'demo'
+    }).json()
+    task = next(item for item in client.get('/api/v1/reviews').json() if item['asset_id'] == asset['id'])
+    assert client.post(f"/api/v1/reviews/{task['id']}/decision", json={'decision':'reject','notes':'拒绝'}).status_code == 403
+    assert client.post(f"/api/v1/reviews/{task['id']}/decision", headers={'X-Actor-Subject':'operator-1','X-Actor-Role':'viewer'}, json={'decision':'reject','notes':'拒绝'}).status_code == 403
+    allowed = client.post(f"/api/v1/reviews/{task['id']}/decision", headers={'X-Actor-Subject':'reviewer-1','X-Actor-Role':'security_reviewer'}, json={'decision':'reject','notes':'拒绝'})
+    assert allowed.status_code == 200

@@ -18,6 +18,15 @@ app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+def actor(request: Request, required_roles: set[str] | None = None) -> str:
+    """读取操作者声明；生产模式下校验角色，开发模式允许本地调试。"""
+    subject = request.headers.get("X-Actor-Subject", "")
+    role = request.headers.get("X-Actor-Role", "")
+    if settings.require_auth and (not subject or (required_roles and role not in required_roles)):
+        raise HTTPException(403, "缺少有效操作者或角色声明")
+    return subject or "development-user"
+
+
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse(static_dir / "index.html")
@@ -75,9 +84,10 @@ def list_pending_reviews(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/reviews/{review_id}/complete")
 def complete_review(review_id: int, request: Request, db: Session = Depends(get_db)):
+    subject = actor(request, {"reviewer", "security_reviewer"})
     task = db.get(ReviewTask, review_id)
     if not task: raise HTTPException(404, "审核任务不存在")
-    task.status = "COMPLETED"; task.reviewer = request.headers.get("X-Actor-Subject", "reviewer")
+    task.status = "COMPLETED"; task.reviewer = subject
     db.add(AuditEvent(action="review.completed", entity_type="review_task", entity_id=str(review_id), actor_subject=task.reviewer, purpose="review", reason="人工审核完成"))
     db.commit(); return {"status": task.status, "review_id": review_id}
 
@@ -104,23 +114,25 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
 @app.post("/api/v1/assets/{asset_id}/withdraw")
 def withdraw_asset(asset_id: int, request: Request, db: Session = Depends(get_db)):
     """冻结资产后续导出，并写入撤回审计。"""
+    subject = actor(request, {"data_admin", "security_reviewer"})
     asset = db.get(SourceAsset, asset_id)
     if not asset:
         raise HTTPException(404, "资产不存在")
     asset.lifecycle_status = "WITHDRAWN"
-    actor = request.headers.get("X-Actor-Subject", "unknown")
-    db.add(AuditEvent(action="asset.withdrawn", entity_type="source_asset", entity_id=str(asset_id), actor_subject=actor, purpose="withdrawal", reason="人工撤回"))
+    actor_name = subject
+    db.add(AuditEvent(action="asset.withdrawn", entity_type="source_asset", entity_id=str(asset_id), actor_subject=actor_name, purpose="withdrawal", reason="人工撤回"))
     db.commit()
     return {"asset_id": asset_id, "lifecycle_status": asset.lifecycle_status}
 
 @app.post("/api/v1/reviews/{review_id}/decision")
 def decide_review(review_id: int, payload: ReviewDecision, request: Request, db: Session = Depends(get_db)):
     """完成审核并同步资产状态。"""
+    subject = actor(request, {"reviewer", "security_reviewer"})
     task = db.get(ReviewTask, review_id)
     if not task:
         raise HTTPException(404, "审核任务不存在")
     task.status = "COMPLETED"
-    task.reviewer = request.headers.get("X-Actor-Subject", "reviewer")
+    task.reviewer = subject
     task.notes = payload.notes
     asset = db.get(SourceAsset, task.asset_id)
     if asset:
@@ -132,6 +144,7 @@ def decide_review(review_id: int, payload: ReviewDecision, request: Request, db:
 @app.post("/api/v1/datasets/{dataset_id}/approve", response_model=DatasetRead)
 def approve_dataset(dataset_id: int, request: Request, db: Session = Depends(get_db)):
     """批准数据集草稿；生产环境应在此处接入完整契约与污染门禁。"""
+    actor(request, {"data_steward", "security_reviewer"})
     dataset = db.get(DatasetVersion, dataset_id)
     if not dataset:
         raise HTTPException(404, "数据集不存在")
@@ -148,6 +161,7 @@ def approve_dataset(dataset_id: int, request: Request, db: Session = Depends(get
 @app.post("/api/v1/datasets/{dataset_id}/exports")
 def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db: Session = Depends(get_db)):
     """为已批准数据集生成不可变 manifest 工件，不暴露原始资产。"""
+    actor(request, {"training_engineer", "data_steward"})
     dataset = db.get(DatasetVersion, dataset_id)
     if not dataset:
         raise HTTPException(404, "数据集不存在")

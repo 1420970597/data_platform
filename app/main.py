@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, EvidenceSpan, GRPOEpisode, PackageExport, PIIFinding, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
-from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
@@ -356,3 +356,37 @@ def create_episode(payload: EpisodeCreate, request: Request, db: Session = Depen
     db.add(episode); db.flush()
     db.add(AuditEvent(action="reward.replayed", entity_type="grpo_episode", entity_id=str(episode.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="rl_post_training", reason=episode.status))
     db.commit(); return {"id": episode.id, "status": episode.status, "replay_hash": replay_hash, "scalar_reward": episode.scalar_reward}
+
+
+@app.get("/api/v1/traces", response_model=list[TraceRead])
+def list_traces(db: Session = Depends(get_db)):
+    """只列出已脱敏的生产 trace 评测候选。"""
+    return list(db.scalars(select(ProductionTrace).order_by(ProductionTrace.created_at.desc())).all())
+
+@app.post("/api/v1/evaluation-datasets/from-traces", response_model=TraceRead, status_code=201)
+def create_trace_eval(payload: TraceCreate, request: Request, db: Session = Depends(get_db)):
+    """生产 trace 进入独立评测快照，默认永不直接进入训练。"""
+    if payload.risk_tier in {"high", "critical"}:
+        raise HTTPException(422, "高风险 trace 不能进入评测快照")
+    if db.scalar(select(ProductionTrace).where(ProductionTrace.trace_ref == payload.trace_ref)):
+        raise HTTPException(409, "trace 已登记")
+    trace = ProductionTrace(**payload.model_dump(), status="EVAL_ONLY", approved_for_training=False)
+    db.add(trace); db.flush()
+    db.add(AuditEvent(action="trace.eval_snapshot_created", entity_type="production_trace", entity_id=str(trace.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="evaluation", reason=payload.redaction_profile))
+    db.commit(); db.refresh(trace); return trace
+
+@app.post("/api/v1/lineage", status_code=201)
+def create_lineage(parent_type: str, parent_id: str, child_type: str, child_id: str, relation: str, request: Request, db: Session = Depends(get_db)):
+    """写入最小血缘边；正文和测试标签不进入事件。"""
+    edge = LineageEdge(parent_type=parent_type, parent_id=parent_id, child_type=child_type, child_id=child_id, relation=relation)
+    db.add(edge)
+    db.add(AuditEvent(action="lineage.edge_created", entity_type=child_type, entity_id=child_id, actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="lineage", reason=relation))
+    db.commit(); return {"id": edge.id, "parent": {"type": parent_type, "id": parent_id}, "child": {"type": child_type, "id": child_id}, "relation": relation}
+
+@app.get("/api/v1/lineage/{entity_type}/{entity_id}")
+def get_lineage(entity_type: str, entity_id: str, db: Session = Depends(get_db)):
+    """查询实体上下游血缘。"""
+    upstream = db.scalars(select(LineageEdge).where(LineageEdge.child_type == entity_type, LineageEdge.child_id == entity_id)).all()
+    downstream = db.scalars(select(LineageEdge).where(LineageEdge.parent_type == entity_type, LineageEdge.parent_id == entity_id)).all()
+    pack=lambda e: {"id": e.id, "parent_type": e.parent_type, "parent_id": e.parent_id, "child_type": e.child_type, "child_id": e.child_id, "relation": e.relation}
+    return {"entity_type": entity_type, "entity_id": entity_id, "upstream": [pack(e) for e in upstream], "downstream": [pack(e) for e in downstream]}

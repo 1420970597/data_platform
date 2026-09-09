@@ -198,3 +198,29 @@ class GRPOEpisode(Base):
     status: Mapped[str] = mapped_column(String(30), default="VERIFIED")
     replay_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class LineageEdge(Base):
+    """跨资产、内容、样本、数据集和运行的血缘边。"""
+    __tablename__ = "lineage_edges"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    parent_type: Mapped[str] = mapped_column(String(60), index=True)
+    parent_id: Mapped[str] = mapped_column(String(120), index=True)
+    child_type: Mapped[str] = mapped_column(String(60), index=True)
+    child_id: Mapped[str] = mapped_column(String(120), index=True)
+    relation: Mapped[str] = mapped_column(String(80))
+    transform_version: Mapped[str] = mapped_column(String(80), default="1.0")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class ProductionTrace(Base):
+    """生产反馈脱敏后的评测候选，禁止直接进入训练。"""
+    __tablename__ = "production_traces"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trace_ref: Mapped[str] = mapped_column(String(160), unique=True)
+    risk_tier: Mapped[str] = mapped_column(String(20))
+    redaction_profile: Mapped[str] = mapped_column(String(80))
+    prompt_redacted: Mapped[str] = mapped_column(Text)
+    output_redacted: Mapped[str] = mapped_column(Text)
+    target_eval_snapshot: Mapped[str] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(30), default="EVAL_ONLY")
+    approved_for_training: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

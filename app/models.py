@@ -233,3 +233,16 @@ class DatasetSample(Base):
     sample_id: Mapped[int] = mapped_column(Integer, index=True)
     split: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class LineageRun(Base):
+    """OpenLineage 兼容运行记录。"""
+    __tablename__ = "lineage_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(80), index=True)
+    job_name: Mapped[str] = mapped_column(String(160))
+    event_type: Mapped[str] = mapped_column(String(20))
+    input_refs: Mapped[list] = mapped_column(JSON, default=list)
+    output_refs: Mapped[list] = mapped_column(JSON, default=list)
+    config_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    code_commit: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

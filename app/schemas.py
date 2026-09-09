@@ -122,3 +122,12 @@ class TraceRead(TraceCreate):
 class DatasetSampleCreate(BaseModel):
     sample_id: int
     split: str = Field(pattern="^(train|validation|test|regression|risk)$")
+
+class LineageRunCreate(BaseModel):
+    run_id: str
+    job_name: str
+    event_type: str = Field(pattern="^(START|COMPLETE|FAIL|ABORT)$")
+    input_refs: list = []
+    output_refs: list = []
+    config_sha256: str | None = None
+    code_commit: str | None = None

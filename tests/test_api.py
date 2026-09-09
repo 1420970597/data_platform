@@ -162,3 +162,10 @@ def test_quality_and_pii_metadata_endpoints():
     response = client.get('/api/v1/contents/1/quality')
     assert response.status_code == 200
     assert client.get('/api/v1/contents/1/pii-findings').status_code == 200
+
+def test_openlineage_run_lifecycle_blocks_after_terminal():
+    payload = {'run_id':'run-demo-1','job_name':'parse-worker','event_type':'START','input_refs':['asset:1'],'code_commit':'abc'}
+    assert client.post('/api/v1/lineage/runs', json=payload).status_code == 201
+    assert client.post('/api/v1/lineage/runs', json={**payload,'event_type':'COMPLETE'}).status_code == 201
+    assert client.post('/api/v1/lineage/runs', json={**payload,'event_type':'START'}).status_code == 409
+    assert len(client.get('/api/v1/lineage/runs/run-demo-1').json()) == 2

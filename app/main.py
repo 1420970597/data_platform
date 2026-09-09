@@ -619,6 +619,21 @@ def get_lineage_run(run_id: str, db: Session = Depends(get_db)):
     rows = db.scalars(select(LineageRun).where(LineageRun.run_id == run_id).order_by(LineageRun.id)).all()
     return [{"run_id": r.run_id, "job_name": r.job_name, "event_type": r.event_type, "input_refs": r.input_refs, "output_refs": r.output_refs, "config_sha256": r.config_sha256, "code_commit": r.code_commit, "created_at": r.created_at} for r in rows]
 
+@app.get("/api/v1/lineage/runs/{run_id}/openlineage")
+def get_openlineage_events(run_id: str, db: Session = Depends(get_db)):
+    """将简化运行记录转换为 OpenLineage 1.x 事件信封。"""
+    rows = db.scalars(select(LineageRun).where(LineageRun.run_id == run_id).order_by(LineageRun.id)).all()
+    return [{
+        "eventType": row.event_type,
+        "eventTime": row.created_at.isoformat(),
+        "run": {"runId": row.run_id},
+        "job": {"namespace": "military-data-platform", "name": row.job_name},
+        "inputs": [{"namespace": "military-data-platform", "name": ref} for ref in (row.input_refs or [])],
+        "outputs": [{"namespace": "military-data-platform", "name": ref} for ref in (row.output_refs or [])],
+        "producer": "https://github.com/1420970597/data_platform",
+        "facets": {"codeVersion": {"_producer": "military-data-platform", "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/CodeVersionRunFacet.json", "version": row.code_commit} if row.code_commit else {}, "config": {"sha256": row.config_sha256} if row.config_sha256 else {}},
+    } for row in rows]
+
 @app.post("/api/v1/training/runs", status_code=201)
 def register_training_run(payload: TrainingRunCreate, request: Request, db: Session = Depends(get_db)):
     """登记训练运行；只有已批准数据集可绑定训练任务。"""

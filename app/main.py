@@ -66,6 +66,11 @@ def create_asset(payload: AssetCreate, request: Request, db: Session = Depends(g
 def list_reviews(db: Session = Depends(get_db)):
     return list(db.scalars(select(ReviewTask).order_by(ReviewTask.created_at.desc())).all())
 
+@app.get("/api/v1/reviews/pending", response_model=list[ReviewRead])
+def list_pending_reviews(db: Session = Depends(get_db)):
+    """审核工作台只返回未完成任务。"""
+    return list(db.scalars(select(ReviewTask).where(ReviewTask.status == "PENDING").order_by(ReviewTask.priority.desc(), ReviewTask.created_at.asc())).all())
+
 @app.post("/api/v1/reviews/{review_id}/complete")
 def complete_review(review_id: int, request: Request, db: Session = Depends(get_db)):
     task = db.get(ReviewTask, review_id)

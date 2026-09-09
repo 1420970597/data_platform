@@ -19,6 +19,7 @@ class SourceAsset(Base):
     platform_mode: Mapped[str] = mapped_column(String(40), default="not_applicable")
     human_authority: Mapped[str] = mapped_column(String(200))
     raw_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    raw_object_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
     lifecycle_status: Mapped[str] = mapped_column(String(40), default="REGISTERED")
     retention_until: Mapped[str | None] = mapped_column(String(40), nullable=True)
     owner_subject: Mapped[str] = mapped_column(String(200))
@@ -56,4 +57,32 @@ class DatasetVersion(Base):
     approval_state: Mapped[str] = mapped_column(String(30), default="DRAFT")
     sample_count: Mapped[int] = mapped_column(Integer, default=0)
     coverage_report: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ContentObject(Base):
+    """标准化内容对象，保留解析版本和源定位。"""
+    __tablename__ = "content_objects"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    asset_id: Mapped[int] = mapped_column(Integer, index=True)
+    modality: Mapped[str] = mapped_column(String(40))
+    language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    content_uri: Mapped[str] = mapped_column(String(500))
+    normalized_sha256: Mapped[str] = mapped_column(String(64))
+    parser_id: Mapped[str] = mapped_column(String(80))
+    parser_version: Mapped[str] = mapped_column(String(40))
+    parser_confidence: Mapped[float] = mapped_column(default=0.0)
+    locator: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(30), default="NORMALIZED")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class QualityAssessment(Base):
+    """质量与政策评分。"""
+    __tablename__ = "quality_assessments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_id: Mapped[int] = mapped_column(Integer, index=True)
+    decision: Mapped[str] = mapped_column(String(30))
+    scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    rule_version: Mapped[str] = mapped_column(String(60), default="quality-v1")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

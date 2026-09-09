@@ -219,12 +219,14 @@ def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db
     }
     manifest_artifact = export_dir / f"dataset-{dataset_id}-{payload.export_type.lower()}.manifest.json"
     manifest_artifact.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    artifact_hash = hashlib.sha256(data_artifact.read_bytes()).hexdigest()
-    export = PackageExport(dataset_id=dataset_id, export_type=payload.export_type, format=payload.format, artifact_uri=str(data_artifact), artifact_sha256=artifact_hash)
+    # PackageExport 保持历史语义：下载地址返回 manifest；数据文件通过 data_artifact_uri 提供。
+    artifact_hash = hashlib.sha256(manifest_artifact.read_bytes()).hexdigest()
+    data_artifact_hash = hashlib.sha256(data_artifact.read_bytes()).hexdigest()
+    export = PackageExport(dataset_id=dataset_id, export_type=payload.export_type, format=payload.format, artifact_uri=str(manifest_artifact), artifact_sha256=artifact_hash)
     db.add(export)
     db.add(AuditEvent(action="dataset.exported", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=subject, purpose=payload.purpose, reason=payload.export_type + ":" + payload.format + f":{len(samples)} samples"))
     db.commit()
-    return {"dataset_id": dataset_id, "export_id": export.id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "materialized_sha256": materialized_hash, "artifact_sha256": artifact_hash, "artifact_uri": str(data_artifact), "manifest_uri": str(manifest_artifact), "sample_count": len(samples), "status": "EXPORTED"}
+    return {"dataset_id": dataset_id, "export_id": export.id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "materialized_sha256": materialized_hash, "artifact_sha256": artifact_hash, "artifact_uri": str(manifest_artifact), "manifest_uri": str(manifest_artifact), "data_artifact_uri": str(data_artifact), "data_artifact_sha256": data_artifact_hash, "sample_count": len(samples), "status": "EXPORTED"}
 
 
 @app.post("/api/v1/assets/{asset_id}/ingest")

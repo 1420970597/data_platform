@@ -131,3 +131,13 @@ def test_lineage_round_trip():
     graph = client.get('/api/v1/lineage/content_object/2')
     assert graph.status_code == 200
     assert graph.json()['upstream'][0]['relation'] == 'parsed'
+
+def test_parse_creates_evidence_spans():
+    import hashlib
+    content = '战前保障检查\n\n检查通信与维修记录。\n'.encode()
+    digest = hashlib.sha256(content).hexdigest()
+    asset = client.post('/api/v1/assets', json={'provider':'解析测试','source_uri':'approved://demo/parser','source_type':'txt','license_id':'lic-parser','allowed_use':'LORA','military_scope':'military_training_readiness','operation_phase':'preparation','service_domains':['communications'],'platform_mode':'manned','human_authority':'reviewer','raw_sha256':digest,'owner_subject':'demo'}).json()
+    ingested = client.post(f"/api/v1/assets/{asset['id']}/ingest", files={'file':('parser.txt',content,'text/plain')}).json()
+    parsed = client.post(f"/api/v1/contents/{ingested['content_id']}/parse")
+    assert parsed.status_code == 200
+    assert parsed.json()['evidence_count'] == 2

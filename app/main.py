@@ -395,3 +395,37 @@ def get_lineage(entity_type: str, entity_id: str, db: Session = Depends(get_db))
     downstream = db.scalars(select(LineageEdge).where(LineageEdge.parent_type == entity_type, LineageEdge.parent_id == entity_id)).all()
     pack=lambda e: {"id": e.id, "parent_type": e.parent_type, "parent_id": e.parent_id, "child_type": e.child_type, "child_id": e.child_id, "relation": e.relation}
     return {"entity_type": entity_type, "entity_id": entity_id, "upstream": [pack(e) for e in upstream], "downstream": [pack(e) for e in downstream]}
+
+@app.post("/api/v1/contents/{content_id}/parse")
+def parse_content(content_id: int, request: Request, db: Session = Depends(get_db)):
+    """运行轻量本地解析器，生成段落证据；复杂文档由后续插件替换。"""
+    content = db.get(ContentObject, content_id)
+    if not content:
+        raise HTTPException(404, "内容对象不存在")
+    path = Path(content.content_uri)
+    if not path.exists():
+        raise HTTPException(422, "原件文件不存在")
+    raw = path.read_text(errors="ignore") if content.modality == "text" else ""
+    if not raw:
+        content.parser_id = "pending-document-parser"
+        content.parser_version = "0.1"
+        content.parser_confidence = 0.0
+        content.status = "REVIEW_PENDING"
+        db.add(QualityAssessment(content_id=content_id, decision="REVIEW", scores={"parser_confidence": 0.0}, reason="非文本文档等待 Docling/PaddleOCR 插件"))
+        db.commit()
+        return {"content_id": content_id, "status": content.status, "parser_id": content.parser_id, "evidence_count": 0}
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n|\r\n", raw) if part.strip()]
+    evidence_count = 0
+    for index, paragraph in enumerate(paragraphs):
+        if len(paragraph) < 2:
+            continue
+        db.add(EvidenceSpan(content_id=content_id, locator={"paragraph": index, "char_start": raw.find(paragraph), "char_end": raw.find(paragraph) + len(paragraph)}, text_or_region=paragraph, confidence=0.95))
+        evidence_count += 1
+    content.parser_id = "local-text-parser"
+    content.parser_version = "1.0"
+    content.parser_confidence = 0.95
+    content.status = "PARSED"
+    db.add(QualityAssessment(content_id=content_id, decision="ALLOW" if evidence_count else "REVIEW", scores={"paragraph_count": evidence_count, "parser_confidence": 0.95}, reason="本地文本解析完成"))
+    db.add(AuditEvent(action="asset.parsed", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="normalization", reason=f"生成 {evidence_count} 个证据片段"))
+    db.commit()
+    return {"content_id": content_id, "status": content.status, "parser_id": content.parser_id, "parser_version": content.parser_version, "evidence_count": evidence_count}

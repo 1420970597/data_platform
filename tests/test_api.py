@@ -218,11 +218,22 @@ def test_quality_gate_records_assertions_and_blocks_pii():
     blocked = client.post(f"/api/v1/contents/{ingested['content_id']}/quality-gate", json={'min_parser_confidence':0.9,'max_pii_findings':0,'min_evidence_count':0,'failure_policy':'BLOCK'})
     assert blocked.json()['decision'] == 'BLOCK'
 
+def test_review_detail_and_evidence_query_expose_provenance():
+    pending = client.get('/api/v1/reviews').json()
+    if not pending:
+        return
+    detail = client.get(f"/api/v1/reviews/{pending[0]['id']}")
+    assert detail.status_code == 200
+    assert 'asset' in detail.json() and 'history' in detail.json()
+    evidence = client.get('/api/v1/evidence?content_id=1')
+    assert evidence.status_code == 200
+    assert isinstance(evidence.json(), list)
+
 def test_production_policy_enforces_actor_roles(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, 'require_auth', True)
     # 创建一个隔离审核任务，验证缺少身份和角色时都会被拒绝。
-    asset = client.post('/api/v1/assets', json={
+    asset = client.post('/api/v1/assets', headers={'X-Actor-Subject':'operator-1','X-Actor-Role':'data_admin'}, json={
         'provider':'权限测试','source_uri':'approved://demo/auth','source_type':'txt',
         'license_id':'lic-auth','allowed_use':'review_only','military_scope':'prohibited_operational',
         'operation_phase':'wartime_support','service_domains':['joint_support'],'platform_mode':'unmanned',

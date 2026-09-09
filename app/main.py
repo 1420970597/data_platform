@@ -56,6 +56,7 @@ def list_assets(db: Session = Depends(get_db)):
 @app.post("/api/v1/assets", response_model=AssetRead, status_code=201)
 def create_asset(payload: AssetCreate, request: Request, db: Session = Depends(get_db)):
     """登记资产；禁止类别在服务端直接隔离。"""
+    subject = actor(request)
     allowed_phases = {"preparation", "wartime_support", "post_event_review", "common"}
     allowed_modes = {"manned", "unmanned", "manned_unmanned_team", "not_applicable"}
     if payload.operation_phase not in allowed_phases:
@@ -69,7 +70,7 @@ def create_asset(payload: AssetCreate, request: Request, db: Session = Depends(g
     status = "QUARANTINED" if blocked else "REGISTERED"
     asset = SourceAsset(**payload.model_dump(), lifecycle_status=status)
     db.add(asset); db.flush()
-    db.add(AuditEvent(action="asset.registered", entity_type="source_asset", entity_id=str(asset.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=payload.allowed_use, reason="高风险输入自动隔离" if blocked else "来源登记"))
+    db.add(AuditEvent(action="asset.registered", entity_type="source_asset", entity_id=str(asset.id), actor_subject=subject, purpose=payload.allowed_use, reason="高风险输入自动隔离" if blocked else "来源登记"))
     if blocked:
         db.add(ReviewTask(asset_id=asset.id, priority="high", task_type="policy_boundary", notes="命中禁止类别，等待合规审核"))
     db.commit(); db.refresh(asset)
@@ -83,6 +84,17 @@ def list_reviews(db: Session = Depends(get_db)):
 def list_pending_reviews(db: Session = Depends(get_db)):
     """审核工作台只返回未完成任务。"""
     return list(db.scalars(select(ReviewTask).where(ReviewTask.status == "PENDING").order_by(ReviewTask.priority.desc(), ReviewTask.created_at.asc())).all())
+
+@app.get("/api/v1/reviews/{review_id}")
+def review_detail(review_id: int, db: Session = Depends(get_db)):
+    """返回审核任务及其资产场景标签，供审核工作台展示。"""
+    task = db.get(ReviewTask, review_id)
+    if not task:
+        raise HTTPException(404, "审核任务不存在")
+    asset = db.get(SourceAsset, task.asset_id)
+    events = db.scalars(select(AuditEvent).where(AuditEvent.entity_type == "review_task", AuditEvent.entity_id == str(review_id)).order_by(AuditEvent.created_at.desc())).all()
+    asset_view = None if asset is None else {"id": asset.id, "provider": asset.provider, "source_uri": asset.source_uri, "source_type": asset.source_type, "license_id": asset.license_id, "allowed_use": asset.allowed_use, "sensitivity_tier": asset.sensitivity_tier, "military_scope": asset.military_scope, "operation_phase": asset.operation_phase, "service_domains": asset.service_domains, "platform_mode": asset.platform_mode, "lifecycle_status": asset.lifecycle_status}
+    return {"review": {"id": task.id, "status": task.status, "priority": task.priority, "task_type": task.task_type, "reviewer": task.reviewer, "notes": task.notes, "created_at": task.created_at}, "asset": asset_view, "history": [{"action": e.action, "actor_subject": e.actor_subject, "reason": e.reason, "created_at": e.created_at} for e in events]}
 
 @app.post("/api/v1/reviews/{review_id}/complete")
 def complete_review(review_id: int, request: Request, db: Session = Depends(get_db)):
@@ -99,9 +111,10 @@ def list_datasets(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/datasets", response_model=DatasetRead, status_code=201)
 def create_dataset(payload: DatasetCreate, request: Request, db: Session = Depends(get_db)):
+    subject = actor(request)
     dataset = DatasetVersion(**payload.model_dump())
     db.add(dataset); db.flush()
-    db.add(AuditEvent(action="dataset.created", entity_type="dataset_version", entity_id=str(dataset.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=payload.purpose, reason="创建数据集草稿"))
+    db.add(AuditEvent(action="dataset.created", entity_type="dataset_version", entity_id=str(dataset.id), actor_subject=subject, purpose=payload.purpose, reason="创建数据集草稿"))
     db.commit(); db.refresh(dataset); return dataset
 
 
@@ -222,11 +235,14 @@ def ingest_asset(asset_id: int, request: Request, file: UploadFile = File(...), 
         raise HTTPException(404, "资产不存在")
     if asset.lifecycle_status in {"QUARANTINED", "WITHDRAWN"}:
         raise HTTPException(409, "资产处于隔离或撤回状态，不能导入")
+    subject = actor(request)
     base = Path(settings.data_dir) / "assets"
     base.mkdir(parents=True, exist_ok=True)
     target = base / str(asset_id)
     target.mkdir(parents=True, exist_ok=True)
-    path = target / (file.filename or "upload.bin")
+    # 仅保留文件名，阻断上传请求中的目录穿越片段。
+    safe_name = Path(file.filename or "upload.bin").name
+    path = target / safe_name
     with path.open("wb") as output:
         shutil.copyfileobj(file.file, output)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -241,7 +257,7 @@ def ingest_asset(asset_id: int, request: Request, file: UploadFile = File(...), 
     db.add(content); db.flush()
     decision = "ALLOW" if asset.sensitivity_tier != "prohibited" else "BLOCK"
     db.add(QualityAssessment(content_id=content.id, decision=decision, scores={"integrity": 1.0, "hash_match": 1.0}, reason="原件哈希校验通过" if decision == "ALLOW" else "敏感等级阻断"))
-    db.add(AuditEvent(action="asset.ingested", entity_type="source_asset", entity_id=str(asset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=asset.allowed_use, reason="原件保存与哈希校验"))
+    db.add(AuditEvent(action="asset.ingested", entity_type="source_asset", entity_id=str(asset_id), actor_subject=subject, purpose=asset.allowed_use, reason="原件保存与哈希校验"))
     db.commit()
     return {"asset_id": asset_id, "content_id": content.id, "sha256": digest, "status": asset.lifecycle_status, "modality": modality}
 
@@ -269,21 +285,23 @@ def list_contracts(db: Session = Depends(get_db)):
 @app.post("/api/v1/contracts", response_model=ContractRead, status_code=201)
 def create_contract(payload: ContractCreate, request: Request, db: Session = Depends(get_db)):
     """创建契约；ACTIVE 契约才能阻断数据集发布。"""
+    subject = actor(request)
     contract = DataContract(**payload.model_dump())
     db.add(contract); db.flush()
-    db.add(AuditEvent(action="contract.created", entity_type="data_contract", entity_id=str(contract.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="governance", reason=payload.name + ":" + payload.version))
+    db.add(AuditEvent(action="contract.created", entity_type="data_contract", entity_id=str(contract.id), actor_subject=subject, purpose="governance", reason=payload.name + ":" + payload.version))
     db.commit(); db.refresh(contract); return contract
 
 @app.post("/api/v1/datasets/{dataset_id}/contract-check")
 def contract_check(dataset_id: int, contract_id: int, request: Request, db: Session = Depends(get_db)):
     """执行基础 schema/freshness/quality 断言并保存结果。"""
+    subject = actor(request)
     dataset = db.get(DatasetVersion, dataset_id); contract = db.get(DataContract, contract_id)
     if not dataset or not contract: raise HTTPException(404, "数据集或契约不存在")
     observed = {"manifest_hash_length": len(dataset.manifest_hash or ""), "sample_count": dataset.sample_count, "coverage_fields": len(dataset.coverage_report or {})}
     passed = observed["manifest_hash_length"] == 64 and observed["sample_count"] > 0 and observed["coverage_fields"] > 0
     result = "PASS" if passed else "FAIL"
     db.add(ContractCheck(dataset_id=dataset_id, contract_id=contract_id, result=result, observed=observed))
-    db.add(AuditEvent(action="dataset.contract_checked", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=dataset.purpose, reason=contract.name + ":" + result))
+    db.add(AuditEvent(action="dataset.contract_checked", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=subject, purpose=dataset.purpose, reason=contract.name + ":" + result))
     db.commit()
     return {"dataset_id": dataset_id, "contract_id": contract_id, "result": result, "observed": observed}
 
@@ -376,20 +394,31 @@ def list_audit(limit: int = 100, db: Session = Depends(get_db)):
 @app.post("/api/v1/evidence", status_code=201)
 def create_evidence(payload: EvidenceCreate, request: Request, db: Session = Depends(get_db)):
     """创建可定位证据片段，供监督样本引用。"""
+    subject = actor(request)
     if not db.get(ContentObject, payload.content_id): raise HTTPException(404, "内容对象不存在")
     evidence = EvidenceSpan(**payload.model_dump())
     db.add(evidence); db.flush()
-    db.add(AuditEvent(action="evidence.created", entity_type="evidence_span", entity_id=str(evidence.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="curation", reason="创建证据片段"))
+    db.add(AuditEvent(action="evidence.created", entity_type="evidence_span", entity_id=str(evidence.id), actor_subject=subject, purpose="curation", reason="创建证据片段"))
     db.commit(); return {"id": evidence.id, "content_id": evidence.content_id, "locator": evidence.locator, "confidence": evidence.confidence}
+
+@app.get("/api/v1/evidence")
+def list_evidence(content_id: int | None = None, db: Session = Depends(get_db)):
+    """查询证据片段元数据，支持按内容对象过滤。"""
+    query = select(EvidenceSpan).order_by(EvidenceSpan.id)
+    if content_id is not None:
+        query = query.where(EvidenceSpan.content_id == content_id)
+    rows = db.scalars(query).all()
+    return [{"id": row.id, "content_id": row.content_id, "locator": row.locator, "text_or_region": row.text_or_region, "confidence": row.confidence, "created_at": row.created_at} for row in rows]
 
 @app.post("/api/v1/samples", status_code=201)
 def create_sample(payload: SampleCreate, request: Request, db: Session = Depends(get_db)):
     """创建证据约束监督样本；禁止无证据样本进入候选。"""
+    subject = actor(request)
     evidence = db.scalars(select(EvidenceSpan).where(EvidenceSpan.id.in_(payload.evidence_refs))).all()
     if len(evidence) != len(set(payload.evidence_refs)): raise HTTPException(422, "证据片段不存在或重复")
     sample = TrainingSample(**payload.model_dump())
     db.add(sample); db.flush()
-    db.add(AuditEvent(action="sample.built", entity_type="training_sample", entity_id=str(sample.id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose="curation", reason=payload.task_type))
+    db.add(AuditEvent(action="sample.built", entity_type="training_sample", entity_id=str(sample.id), actor_subject=subject, purpose="curation", reason=payload.task_type))
     db.commit(); return {"id": sample.id, "task_type": sample.task_type, "status": sample.status, "evidence_refs": sample.evidence_refs}
 
 @app.post("/api/v1/reward-specs", status_code=201)

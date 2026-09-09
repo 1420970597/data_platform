@@ -113,3 +113,21 @@ def test_audit_endpoint_is_available():
     response = client.get('/api/v1/audit?limit=5')
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+def test_trace_enters_eval_only_snapshot():
+    payload = {'trace_ref':'trace-demo-1','risk_tier':'low','redaction_profile':'trace-v1','prompt_redacted':'核验保障记录','output_redacted':'记录缺少时间字段','target_eval_snapshot':'eval-demo-v1'}
+    response = client.post('/api/v1/evaluation-datasets/from-traces', json=payload)
+    assert response.status_code == 201
+    assert response.json()['status'] == 'EVAL_ONLY'
+    assert response.json()['approved_for_training'] is False
+
+def test_high_risk_trace_is_blocked():
+    payload = {'trace_ref':'trace-demo-high','risk_tier':'high','redaction_profile':'trace-v1','prompt_redacted':'敏感','output_redacted':'敏感','target_eval_snapshot':'eval-demo-v1'}
+    assert client.post('/api/v1/evaluation-datasets/from-traces', json=payload).status_code == 422
+
+def test_lineage_round_trip():
+    created = client.post('/api/v1/lineage?parent_type=source_asset&parent_id=1&child_type=content_object&child_id=2&relation=parsed')
+    assert created.status_code == 201
+    graph = client.get('/api/v1/lineage/content_object/2')
+    assert graph.status_code == 200
+    assert graph.json()['upstream'][0]['relation'] == 'parsed'

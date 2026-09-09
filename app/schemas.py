@@ -103,3 +103,18 @@ class EpisodeCreate(BaseModel):
     scalar_reward: float
     reward_spec_id: int
     scenario_context: dict
+
+class TraceCreate(BaseModel):
+    trace_ref: str
+    risk_tier: str = Field(pattern="^(low|medium|high|critical)$")
+    redaction_profile: str = Field(min_length=1)
+    prompt_redacted: str
+    output_redacted: str
+    target_eval_snapshot: str
+
+class TraceRead(TraceCreate):
+    id: int
+    status: str
+    approved_for_training: bool
+    created_at: datetime
+    model_config = {"from_attributes": True}

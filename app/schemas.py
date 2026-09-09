@@ -140,3 +140,15 @@ class QualityGateRequest(BaseModel):
     min_evidence_confidence: float = Field(default=0.0, ge=0, le=1)
     allowed_modalities: list[str] = []
     failure_policy: str = Field(default="REVIEW", pattern="^(REVIEW|BLOCK)$")
+
+class TrainingRunCreate(BaseModel):
+    """训练运行的可复现元数据。"""
+    run_id: str = Field(min_length=1, max_length=100)
+    dataset_id: int
+    training_type: str = Field(pattern="^(LORA|GRPO|SUPERVISED)$")
+    code_commit: str = Field(min_length=1)
+    image_digest: str = Field(min_length=1)
+    parameters: dict = {}
+    resources: dict = {}
+    output_artifacts: list = []
+    status: str = Field(default="REGISTERED", pattern="^(REGISTERED|RUNNING|SUCCEEDED|FAILED|CANCELLED)$")

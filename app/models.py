@@ -109,3 +109,28 @@ class ContractCheck(Base):
     result: Mapped[str] = mapped_column(String(20))
     observed: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class PIIFinding(Base):
+    """PII 检测发现项，默认不自动放行高敏结果。"""
+    __tablename__ = "pii_findings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_id: Mapped[int] = mapped_column(Integer, index=True)
+    entity_type: Mapped[str] = mapped_column(String(40))
+    locator: Mapped[dict] = mapped_column(JSON, default=dict)
+    confidence: Mapped[float] = mapped_column(default=0.0)
+    detector_version: Mapped[str] = mapped_column(String(50), default="regex-v1")
+    action: Mapped[str] = mapped_column(String(30), default="quarantine")
+    review_state: Mapped[str] = mapped_column(String(30), default="PENDING")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class DedupeMatch(Base):
+    """文本/视觉去重命中记录。"""
+    __tablename__ = "dedupe_matches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content_id: Mapped[int] = mapped_column(Integer, index=True)
+    matched_content_id: Mapped[int] = mapped_column(Integer)
+    layer: Mapped[str] = mapped_column(String(20))
+    similarity: Mapped[float] = mapped_column(default=1.0)
+    detector_version: Mapped[str] = mapped_column(String(50), default="exact-v1")
+    decision: Mapped[str] = mapped_column(String(20), default="ISOLATE")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

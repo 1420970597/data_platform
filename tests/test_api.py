@@ -77,3 +77,13 @@ def test_contract_check_records_gate_result():
     result = client.post(f"/api/v1/datasets/{dataset['id']}/contract-check?contract_id={contract.json()['id']}")
     assert result.status_code == 200
     assert result.json()['result'] == 'PASS'
+
+def test_pii_scan_marks_content_for_review():
+    import hashlib
+    content = b'contact 13800138000 and test@example.org\n'
+    digest = hashlib.sha256(content).hexdigest()
+    asset = client.post('/api/v1/assets', json={'provider':'隐私测试','source_uri':'approved://demo/pii','source_type':'txt','license_id':'lic-pii','allowed_use':'review_only','military_scope':'military_training_readiness','operation_phase':'preparation','service_domains':['medical'],'platform_mode':'not_applicable','human_authority':'reviewer','raw_sha256':digest,'owner_subject':'demo'}).json()
+    ingested = client.post(f"/api/v1/assets/{asset['id']}/ingest", files={'file':('pii.txt',content,'text/plain')}).json()
+    result = client.post(f"/api/v1/contents/{ingested['content_id']}/pii-scan").json()
+    assert result['finding_count'] == 2
+    assert result['decision'] == 'REVIEW'

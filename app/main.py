@@ -1,6 +1,7 @@
 """军事领域数据制备平台 API 与前端入口。"""
 from pathlib import Path
 import hashlib
+import re
 import shutil
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -9,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, QualityAssessment, ReviewTask, SourceAsset
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, PIIFinding, QualityAssessment, ReviewTask, SourceAsset
 from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
 
 Base.metadata.create_all(bind=engine)
@@ -212,3 +213,43 @@ def contract_check(dataset_id: int, contract_id: int, request: Request, db: Sess
     db.add(AuditEvent(action="dataset.contract_checked", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=dataset.purpose, reason=contract.name + ":" + result))
     db.commit()
     return {"dataset_id": dataset_id, "contract_id": contract_id, "result": result, "observed": observed}
+
+
+@app.post("/api/v1/contents/{content_id}/pii-scan")
+def scan_pii(content_id: int, request: Request, db: Session = Depends(get_db)):
+    """对文本内容执行最小化正则扫描；真实环境需替换为经黄金集校准的检测器。"""
+    content = db.get(ContentObject, content_id)
+    if not content:
+        raise HTTPException(404, "内容对象不存在")
+    path = Path(content.content_uri)
+    text = path.read_text(errors="ignore") if path.exists() and content.modality == "text" else ""
+    patterns = {"email": r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "phone": r"(?<!\d)1[3-9]\d{9}(?!\d)", "id_number": r"(?<!\d)\d{17}[0-9Xx](?!\d)"}
+    findings = []
+    for entity_type, pattern in patterns.items():
+        for match in re.finditer(pattern, text):
+            finding = PIIFinding(content_id=content_id, entity_type=entity_type, locator={"start": match.start(), "end": match.end()}, confidence=0.98, action="typed_placeholder", review_state="PENDING")
+            db.add(finding); findings.append({"entity_type": entity_type, "start": match.start(), "end": match.end()})
+    if findings:
+        content.status = "REVIEW_PENDING"
+        db.add(QualityAssessment(content_id=content_id, decision="REVIEW", scores={"pii_findings": len(findings)}, reason="检测到 PII，等待人工复核"))
+    db.add(AuditEvent(action="pii.detected", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="privacy", reason=f"发现 {len(findings)} 项"))
+    db.commit()
+    return {"content_id": content_id, "finding_count": len(findings), "findings": findings, "decision": "REVIEW" if findings else "ALLOW"}
+
+@app.post("/api/v1/contents/{content_id}/dedupe")
+def dedupe_content(content_id: int, request: Request, db: Session = Depends(get_db)):
+    """执行精确哈希去重，命中后隔离当前内容对象。"""
+    content = db.get(ContentObject, content_id)
+    if not content:
+        raise HTTPException(404, "内容对象不存在")
+    matches = db.scalars(select(ContentObject).where(ContentObject.normalized_sha256 == content.normalized_sha256, ContentObject.id != content_id)).all()
+    result = []
+    for match in matches:
+        db.add(DedupeMatch(content_id=content_id, matched_content_id=match.id, layer="exact", similarity=1.0, decision="ISOLATE"))
+        result.append({"matched_content_id": match.id, "layer": "exact", "similarity": 1.0})
+    if result:
+        content.status = "QUARANTINED"
+        db.add(QualityAssessment(content_id=content_id, decision="BLOCK", scores={"exact_duplicate": 1.0}, reason="命中精确重复"))
+    db.add(AuditEvent(action="dedupe.completed", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="quality", reason=f"精确命中 {len(result)} 项"))
+    db.commit()
+    return {"content_id": content_id, "matches": result, "decision": "ISOLATE" if result else "ALLOW"}

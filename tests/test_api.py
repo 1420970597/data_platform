@@ -53,3 +53,19 @@ def test_dataset_approval_and_export():
     exported = client.post(f'/api/v1/datasets/{dataset_id}/exports', json={'export_type':'LORA','format':'jsonl','purpose':'LORA'})
     assert exported.status_code == 200
     assert exported.json()['status'] == 'EXPORTED'
+
+def test_ingest_preserves_hash_and_creates_content():
+    import hashlib
+    content = b'authorized readiness checklist\nphase: preparation\n'
+    digest = hashlib.sha256(content).hexdigest()
+    payload = {
+        'provider':'文档归档中心','source_uri':'approved://demo/ingest','source_type':'txt',
+        'license_id':'lic-demo-3','allowed_use':'LORA','military_scope':'military_training_readiness',
+        'operation_phase':'preparation','service_domains':['land'],'platform_mode':'manned',
+        'human_authority':'reviewer-demo','raw_sha256':digest,'owner_subject':'demo'
+    }
+    asset = client.post('/api/v1/assets', json=payload).json()
+    response = client.post(f"/api/v1/assets/{asset['id']}/ingest", files={'file':('checklist.txt',content,'text/plain')})
+    assert response.status_code == 200
+    assert response.json()['sha256'] == digest
+    assert client.get(f"/api/v1/assets/{asset['id']}/contents").json()[0]['modality'] == 'text'

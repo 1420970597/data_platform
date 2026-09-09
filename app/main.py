@@ -1,12 +1,15 @@
 """军事领域数据制备平台 API 与前端入口。"""
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, Request
+import hashlib
+import shutil
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
-from .models import AuditEvent, DatasetVersion, ReviewTask, SourceAsset
+from .config import settings
+from .models import AuditEvent, ContentObject, DatasetVersion, QualityAssessment, ReviewTask, SourceAsset
 from .schemas import AssetCreate, AssetRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
 
 Base.metadata.create_all(bind=engine)
@@ -144,3 +147,41 @@ def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db
     db.add(AuditEvent(action="dataset.exported", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=payload.purpose, reason=payload.export_type + ":" + payload.format))
     db.commit()
     return {"dataset_id": dataset_id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "status": "EXPORTED"}
+
+
+@app.post("/api/v1/assets/{asset_id}/ingest")
+def ingest_asset(asset_id: int, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """保存原件并生成最小内容对象；重型 OCR 由后续 Worker 处理。"""
+    asset = db.get(SourceAsset, asset_id)
+    if not asset:
+        raise HTTPException(404, "资产不存在")
+    if asset.lifecycle_status in {"QUARANTINED", "WITHDRAWN"}:
+        raise HTTPException(409, "资产处于隔离或撤回状态，不能导入")
+    base = Path(settings.data_dir) / "assets"
+    base.mkdir(parents=True, exist_ok=True)
+    target = base / str(asset_id)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / (file.filename or "upload.bin")
+    with path.open("wb") as output:
+        shutil.copyfileobj(file.file, output)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != asset.raw_sha256:
+        path.unlink(missing_ok=True)
+        raise HTTPException(422, "上传原件哈希与登记值不一致")
+    asset.raw_object_uri = str(path)
+    asset.lifecycle_status = "INGESTED"
+    suffix = path.suffix.lower()
+    modality = "text" if suffix in {".txt", ".md", ".csv", ".json", ".html"} else "document"
+    content = ContentObject(asset_id=asset_id, modality=modality, content_uri=str(path), normalized_sha256=digest, parser_id="ingest-pass-through", parser_version="1.0", parser_confidence=1.0, locator={"filename": file.filename}, status="NORMALIZED")
+    db.add(content); db.flush()
+    decision = "ALLOW" if asset.sensitivity_tier != "prohibited" else "BLOCK"
+    db.add(QualityAssessment(content_id=content.id, decision=decision, scores={"integrity": 1.0, "hash_match": 1.0}, reason="原件哈希校验通过" if decision == "ALLOW" else "敏感等级阻断"))
+    db.add(AuditEvent(action="asset.ingested", entity_type="source_asset", entity_id=str(asset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=asset.allowed_use, reason="原件保存与哈希校验"))
+    db.commit()
+    return {"asset_id": asset_id, "content_id": content.id, "sha256": digest, "status": asset.lifecycle_status, "modality": modality}
+
+@app.get("/api/v1/assets/{asset_id}/contents")
+def list_contents(asset_id: int, db: Session = Depends(get_db)):
+    """列出资产的标准化内容对象和质量结论。"""
+    rows = db.scalars(select(ContentObject).where(ContentObject.asset_id == asset_id).order_by(ContentObject.created_at.desc())).all()
+    return [{"id": row.id, "asset_id": row.asset_id, "modality": row.modality, "parser_version": row.parser_version, "confidence": row.parser_confidence, "status": row.status} for row in rows]

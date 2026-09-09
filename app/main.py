@@ -10,8 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
-from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="军事领域数据制备平台", version="0.1.0")
@@ -133,6 +133,9 @@ def approve_dataset(dataset_id: int, request: Request, db: Session = Depends(get
     dataset = db.get(DatasetVersion, dataset_id)
     if not dataset:
         raise HTTPException(404, "数据集不存在")
+    failed_contract = db.scalar(select(func.count(ContractCheck.id)).where(ContractCheck.dataset_id == dataset_id, ContractCheck.result == "FAIL"))
+    if failed_contract:
+        raise HTTPException(409, "数据集存在失败的数据契约检查")
     if dataset.approval_state not in {"DRAFT", "REVIEWED"}:
         raise HTTPException(409, "数据集状态不允许批准")
     dataset.approval_state = "APPROVED"
@@ -429,3 +432,24 @@ def parse_content(content_id: int, request: Request, db: Session = Depends(get_d
     db.add(AuditEvent(action="asset.parsed", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="normalization", reason=f"生成 {evidence_count} 个证据片段"))
     db.commit()
     return {"content_id": content_id, "status": content.status, "parser_id": content.parser_id, "parser_version": content.parser_version, "evidence_count": evidence_count}
+
+
+@app.post("/api/v1/datasets/{dataset_id}/samples", status_code=201)
+def add_dataset_sample(dataset_id: int, payload: DatasetSampleCreate, request: Request, db: Session = Depends(get_db)):
+    """把已创建的监督样本加入数据版本，并明确训练/评测分割。"""
+    dataset = db.get(DatasetVersion, dataset_id); sample = db.get(TrainingSample, payload.sample_id)
+    if not dataset or not sample: raise HTTPException(404, "数据集或样本不存在")
+    if dataset.approval_state not in {"DRAFT", "REVIEWED"}: raise HTTPException(409, "数据集已冻结，不能追加样本")
+    if db.scalar(select(DatasetSample).where(DatasetSample.dataset_id == dataset_id, DatasetSample.sample_id == payload.sample_id)):
+        raise HTTPException(409, "样本已加入该数据集")
+    link = DatasetSample(dataset_id=dataset_id, sample_id=payload.sample_id, split=payload.split)
+    db.add(link); dataset.sample_count = (dataset.sample_count or 0) + 1
+    db.add(AuditEvent(action="dataset.sample_added", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=dataset.purpose, reason=f"sample={payload.sample_id},split={payload.split}"))
+    db.commit(); return {"dataset_id": dataset_id, "sample_id": payload.sample_id, "split": payload.split, "sample_count": dataset.sample_count}
+
+@app.get("/api/v1/datasets/{dataset_id}/samples")
+def list_dataset_samples(dataset_id: int, db: Session = Depends(get_db)):
+    """查看数据集样本分割清单。"""
+    if not db.get(DatasetVersion, dataset_id): raise HTTPException(404, "数据集不存在")
+    rows = db.scalars(select(DatasetSample).where(DatasetSample.dataset_id == dataset_id).order_by(DatasetSample.id)).all()
+    return [{"id": row.id, "sample_id": row.sample_id, "split": row.split} for row in rows]

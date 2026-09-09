@@ -118,3 +118,7 @@ class TraceRead(TraceCreate):
     approved_for_training: bool
     created_at: datetime
     model_config = {"from_attributes": True}
+
+class DatasetSampleCreate(BaseModel):
+    sample_id: int
+    split: str = Field(pattern="^(train|validation|test|regression|risk)$")

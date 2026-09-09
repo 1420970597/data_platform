@@ -131,3 +131,12 @@ class LineageRunCreate(BaseModel):
     output_refs: list = []
     config_sha256: str | None = None
     code_commit: str | None = None
+
+class QualityGateRequest(BaseModel):
+    """质量门断言参数，适用于不同军兵种和作战阶段的数据。"""
+    min_parser_confidence: float = Field(default=0.0, ge=0, le=1)
+    max_pii_findings: int = Field(default=0, ge=0)
+    min_evidence_count: int = Field(default=0, ge=0)
+    min_evidence_confidence: float = Field(default=0.0, ge=0, le=1)
+    allowed_modalities: list[str] = []
+    failure_policy: str = Field(default="REVIEW", pattern="^(REVIEW|BLOCK)$")

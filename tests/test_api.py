@@ -237,6 +237,16 @@ def test_training_run_requires_approved_dataset_and_records_lineage():
     assert response.status_code == 201
     assert client.get('/api/v1/training/runs?dataset_id='+str(dataset['id'])).json()[0]['status'] == 'REGISTERED'
 
+def test_openlineage_standard_event_view():
+    payload = {'run_id':'run-openlineage-view','job_name':'quality-gate','event_type':'START','input_refs':['content:1'],'output_refs':['quality:1'],'code_commit':'abc'}
+    assert client.post('/api/v1/lineage/runs', json=payload).status_code == 201
+    events = client.get('/api/v1/lineage/runs/run-openlineage-view/openlineage')
+    assert events.status_code == 200
+    event = events.json()[0]
+    assert event['eventType'] == 'START'
+    assert event['job']['namespace'] == 'military-data-platform'
+    assert event['inputs'][0]['name'] == 'content:1'
+
 def test_production_policy_enforces_actor_roles(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, 'require_auth', True)

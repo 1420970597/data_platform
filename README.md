@@ -17,7 +17,9 @@ docker compose up -d --build
 APP_PORT=18000 docker compose up -d --build
 ```
 
-API 文档：`/docs`；健康检查：`/api/v1/health`。
+API 文档：`/docs`；健康检查：`/api/v1/health`，依赖检查：`/api/v1/health/dependencies`。
+
+导出 manifest 可通过 `/api/v1/exports/{export_id}/download` 下载；生产 trace 只能进入评测快照。
 
 ## 本地开发
 

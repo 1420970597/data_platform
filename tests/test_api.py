@@ -152,3 +152,8 @@ def test_dataset_sample_membership_and_split():
     linked = client.post(f"/api/v1/datasets/{dataset['id']}/samples", json={'sample_id':sample['id'],'split':'train'})
     assert linked.status_code == 201
     assert client.get(f"/api/v1/datasets/{dataset['id']}/samples").json()[0]['split'] == 'train'
+
+def test_dependency_health_and_export_download():
+    health = client.get('/api/v1/health/dependencies')
+    assert health.status_code == 200
+    assert health.json()['database'] == 'ok'

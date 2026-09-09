@@ -87,3 +87,10 @@ def test_pii_scan_marks_content_for_review():
     result = client.post(f"/api/v1/contents/{ingested['content_id']}/pii-scan").json()
     assert result['finding_count'] == 2
     assert result['decision'] == 'REVIEW'
+
+def test_export_creates_hashed_manifest():
+    dataset = client.post('/api/v1/datasets', json={'name':'导出清单测试','purpose':'LORA','manifest_hash':'e'*64,'sample_count':1,'coverage_report':{'common':1}}).json()
+    client.post(f"/api/v1/datasets/{dataset['id']}/approve")
+    result = client.post(f"/api/v1/datasets/{dataset['id']}/exports", json={'export_type':'LORA','format':'jsonl','purpose':'LORA'})
+    assert result.status_code == 200
+    assert len(result.json()['artifact_sha256']) == 64

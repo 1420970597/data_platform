@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
-from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, PIIFinding, QualityAssessment, ReviewTask, SourceAsset
+from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DedupeMatch, PackageExport, PIIFinding, QualityAssessment, ReviewTask, SourceAsset
 from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, ReviewDecision, ReviewRead, ExportRequest
 
 Base.metadata.create_all(bind=engine)
@@ -137,7 +137,7 @@ def approve_dataset(dataset_id: int, request: Request, db: Session = Depends(get
 
 @app.post("/api/v1/datasets/{dataset_id}/exports")
 def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db: Session = Depends(get_db)):
-    """仅允许已批准数据集生成导出登记，不直接暴露原始资产。"""
+    """为已批准数据集生成不可变 manifest 工件，不暴露原始资产。"""
     dataset = db.get(DatasetVersion, dataset_id)
     if not dataset:
         raise HTTPException(404, "数据集不存在")
@@ -145,9 +145,22 @@ def export_dataset(dataset_id: int, payload: ExportRequest, request: Request, db
         raise HTTPException(409, "数据集尚未批准")
     if payload.purpose != dataset.purpose:
         raise HTTPException(403, "用途声明与数据集用途不匹配")
+    export_dir = Path(settings.data_dir) / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "dataset_id": dataset.id, "name": dataset.name, "purpose": dataset.purpose,
+        "export_type": payload.export_type, "format": payload.format,
+        "manifest_hash": dataset.manifest_hash, "taxonomy_version": dataset.taxonomy_version,
+        "sample_count": dataset.sample_count, "coverage_report": dataset.coverage_report,
+    }
+    artifact = export_dir / f"dataset-{dataset_id}-{payload.export_type.lower()}.manifest.json"
+    artifact.write_text(__import__("json").dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    export = PackageExport(dataset_id=dataset_id, export_type=payload.export_type, format=payload.format, artifact_uri=str(artifact), artifact_sha256=artifact_hash)
+    db.add(export)
     db.add(AuditEvent(action="dataset.exported", entity_type="dataset_version", entity_id=str(dataset_id), actor_subject=request.headers.get("X-Actor-Subject", "unknown"), purpose=payload.purpose, reason=payload.export_type + ":" + payload.format))
     db.commit()
-    return {"dataset_id": dataset_id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "status": "EXPORTED"}
+    return {"dataset_id": dataset_id, "export_id": export.id, "export_type": payload.export_type, "format": payload.format, "manifest_hash": dataset.manifest_hash, "artifact_sha256": artifact_hash, "artifact_uri": str(artifact), "status": "EXPORTED"}
 
 
 @app.post("/api/v1/assets/{asset_id}/ingest")

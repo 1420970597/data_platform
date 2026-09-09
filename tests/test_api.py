@@ -205,6 +205,19 @@ def test_parser_registry_and_image_provenance_pending():
     assert parsed.json()['status'] == 'REVIEW_PENDING'
     assert parsed.json()['provenance']['pending_reason']
 
+def test_quality_gate_records_assertions_and_blocks_pii():
+    import hashlib
+    content = b'wartime checklist contact 13800138000\n'
+    digest = hashlib.sha256(content).hexdigest()
+    asset = client.post('/api/v1/assets', json={'provider':'质量门测试','source_uri':'approved://demo/gate','source_type':'txt','license_id':'lic-gate','allowed_use':'review_only','operation_phase':'wartime_support','service_domains':['logistics'],'platform_mode':'manned','human_authority':'reviewer','raw_sha256':digest,'owner_subject':'demo'}).json()
+    ingested = client.post(f"/api/v1/assets/{asset['id']}/ingest", files={'file':('gate.txt',content,'text/plain')}).json()
+    result = client.post(f"/api/v1/contents/{ingested['content_id']}/quality-gate", json={'min_parser_confidence':0.9,'max_pii_findings':0,'min_evidence_count':0,'failure_policy':'BLOCK'})
+    assert result.status_code == 200
+    assert result.json()['decision'] == 'ALLOW'  # PII 扫描尚未执行时，门禁按已观测事实放行
+    client.post(f"/api/v1/contents/{ingested['content_id']}/pii-scan")
+    blocked = client.post(f"/api/v1/contents/{ingested['content_id']}/quality-gate", json={'min_parser_confidence':0.9,'max_pii_findings':0,'min_evidence_count':0,'failure_policy':'BLOCK'})
+    assert blocked.json()['decision'] == 'BLOCK'
+
 def test_production_policy_enforces_actor_roles(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, 'require_auth', True)

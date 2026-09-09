@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .config import settings
 from .models import AuditEvent, ContentObject, ContractCheck, DataContract, DatasetVersion, DatasetSample, DedupeMatch, EvidenceSpan, GRPOEpisode, LineageEdge, LineageRun, PackageExport, PIIFinding, ProductionTrace, QualityAssessment, RewardSpec, ReviewTask, SourceAsset, TrainingSample
-from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate, LineageRunCreate
+from .schemas import AssetCreate, AssetRead, ContractCreate, ContractRead, DatasetCreate, DatasetRead, EpisodeCreate, EvidenceCreate, ExportRequest, ReviewDecision, ReviewRead, RewardSpecCreate, SampleCreate, TraceCreate, TraceRead, DatasetSampleCreate, LineageRunCreate, QualityGateRequest
 from .parsers import select_parser
 
 Base.metadata.create_all(bind=engine)
@@ -537,6 +537,30 @@ def content_quality(content_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "内容对象不存在")
     rows = db.scalars(select(QualityAssessment).where(QualityAssessment.content_id == content_id).order_by(QualityAssessment.created_at.desc())).all()
     return [{"id": row.id, "decision": row.decision, "scores": row.scores, "reason": row.reason, "rule_version": row.rule_version, "created_at": row.created_at} for row in rows]
+
+@app.post("/api/v1/contents/{content_id}/quality-gate")
+def run_quality_gate(content_id: int, payload: QualityGateRequest, request: Request, db: Session = Depends(get_db)):
+    """执行可配置质量门并记录每条断言，失败按策略隔离或转人工复核。"""
+    content = db.get(ContentObject, content_id)
+    if not content:
+        raise HTTPException(404, "内容对象不存在")
+    evidence = db.scalars(select(EvidenceSpan).where(EvidenceSpan.content_id == content_id)).all()
+    pii_count = db.scalar(select(func.count(PIIFinding.id)).where(PIIFinding.content_id == content_id)) or 0
+    checks = {
+        "parser_confidence": {"observed": content.parser_confidence, "required": payload.min_parser_confidence, "passed": content.parser_confidence >= payload.min_parser_confidence},
+        "pii_findings": {"observed": pii_count, "required_max": payload.max_pii_findings, "passed": pii_count <= payload.max_pii_findings},
+        "evidence_count": {"observed": len(evidence), "required": payload.min_evidence_count, "passed": len(evidence) >= payload.min_evidence_count},
+        "evidence_confidence": {"observed": min((item.confidence for item in evidence), default=0.0), "required": payload.min_evidence_confidence, "passed": min((item.confidence for item in evidence), default=0.0) >= payload.min_evidence_confidence},
+    }
+    if payload.allowed_modalities:
+        checks["modality"] = {"observed": content.modality, "allowed": payload.allowed_modalities, "passed": content.modality in payload.allowed_modalities}
+    passed = all(item["passed"] for item in checks.values())
+    decision = "ALLOW" if passed else payload.failure_policy
+    content.status = "NORMALIZED" if decision == "ALLOW" else ("QUARANTINED" if decision == "BLOCK" else "REVIEW_PENDING")
+    db.add(QualityAssessment(content_id=content_id, decision=decision, scores=checks, reason="全部质量断言通过" if passed else "存在未通过的质量断言", rule_version="quality-gate-v1"))
+    db.add(AuditEvent(action="quality.gate_evaluated", entity_type="content_object", entity_id=str(content_id), actor_subject=request.headers.get("X-Actor-Subject", "system"), purpose="quality", reason=f"{decision}:{len([c for c in checks.values() if not c['passed']])} failures"))
+    db.commit()
+    return {"content_id": content_id, "decision": decision, "passed": passed, "checks": checks, "status": content.status}
 
 @app.get("/api/v1/contents/{content_id}/pii-findings")
 def content_pii_findings(content_id: int, db: Session = Depends(get_db)):

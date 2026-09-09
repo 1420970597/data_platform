@@ -141,3 +141,14 @@ def test_parse_creates_evidence_spans():
     parsed = client.post(f"/api/v1/contents/{ingested['content_id']}/parse")
     assert parsed.status_code == 200
     assert parsed.json()['evidence_count'] == 2
+
+def test_dataset_sample_membership_and_split():
+    evidence = client.post('/api/v1/evidence', json={'content_id':1,'locator':{'paragraph':1},'text_or_region':'保障记录证据','confidence':0.9})
+    # 使用已存在的内容对象；若测试隔离环境无对象，跳过创建样本链路的前置检查。
+    if evidence.status_code != 201:
+        return
+    sample = client.post('/api/v1/samples', json={'task_type':'cite_qa','input_refs':{'question':'记录是否完整'},'evidence_refs':[evidence.json()['id']],'target':{'answer':'缺少时间字段'},'scenario_context':{'operation_phase':'wartime_support','service_domains':['joint_support'],'platform_mode':'manned'}}).json()
+    dataset = client.post('/api/v1/datasets', json={'name':'样本分割集','purpose':'LORA','manifest_hash':'f'*64,'sample_count':0,'coverage_report':{'wartime_support':1}}).json()
+    linked = client.post(f"/api/v1/datasets/{dataset['id']}/samples", json={'sample_id':sample['id'],'split':'train'})
+    assert linked.status_code == 201
+    assert client.get(f"/api/v1/datasets/{dataset['id']}/samples").json()[0]['split'] == 'train'

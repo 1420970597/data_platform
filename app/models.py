@@ -224,3 +224,12 @@ class ProductionTrace(Base):
     status: Mapped[str] = mapped_column(String(30), default="EVAL_ONLY")
     approved_for_training: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class DatasetSample(Base):
+    """数据版本与训练样本的不可变关联及分割。"""
+    __tablename__ = "dataset_samples"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(Integer, index=True)
+    sample_id: Mapped[int] = mapped_column(Integer, index=True)
+    split: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))

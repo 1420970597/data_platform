@@ -157,3 +157,8 @@ def test_dependency_health_and_export_download():
     health = client.get('/api/v1/health/dependencies')
     assert health.status_code == 200
     assert health.json()['database'] == 'ok'
+
+def test_quality_and_pii_metadata_endpoints():
+    response = client.get('/api/v1/contents/1/quality')
+    assert response.status_code == 200
+    assert client.get('/api/v1/contents/1/pii-findings').status_code == 200

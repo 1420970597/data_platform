@@ -482,3 +482,20 @@ def dependency_health(db: Session = Depends(get_db)):
     except OSError:
         data_status = "error"
     return {"status": "ok" if db_status == data_status == "ok" else "degraded", "database": db_status, "data_dir": data_status}
+
+
+@app.get("/api/v1/contents/{content_id}/quality")
+def content_quality(content_id: int, db: Session = Depends(get_db)):
+    """返回内容对象的质量和政策检查历史。"""
+    if not db.get(ContentObject, content_id):
+        raise HTTPException(404, "内容对象不存在")
+    rows = db.scalars(select(QualityAssessment).where(QualityAssessment.content_id == content_id).order_by(QualityAssessment.created_at.desc())).all()
+    return [{"id": row.id, "decision": row.decision, "scores": row.scores, "reason": row.reason, "rule_version": row.rule_version, "created_at": row.created_at} for row in rows]
+
+@app.get("/api/v1/contents/{content_id}/pii-findings")
+def content_pii_findings(content_id: int, db: Session = Depends(get_db)):
+    """返回 PII 发现项元数据，不返回原文内容。"""
+    if not db.get(ContentObject, content_id):
+        raise HTTPException(404, "内容对象不存在")
+    rows = db.scalars(select(PIIFinding).where(PIIFinding.content_id == content_id).order_by(PIIFinding.created_at.desc())).all()
+    return [{"id": row.id, "entity_type": row.entity_type, "locator": row.locator, "confidence": row.confidence, "action": row.action, "review_state": row.review_state, "detector_version": row.detector_version} for row in rows]
